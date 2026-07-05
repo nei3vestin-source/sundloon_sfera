@@ -10,6 +10,7 @@ from aiogram.filters import Command
 
 API_TOKEN = '8663984903:AAGKuNOjEEArgkKQtsIRBGW8dAtVipx_HGg'
 ADMIN_IDS = [8251761249, 7799646371, 8734624959]
+MANAGER_ID = 8734624959  # ID менеджера (GendaleTray)
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -112,7 +113,7 @@ def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎬 Купить видео (2🪙)", callback_data="buy_video")],
         [InlineKeyboardButton(text="👥 Пригласить друга", callback_data="invite"),
-         InlineKeyboardButton(text="⭐ Купить коины", callback_data="buy_coins")],
+         InlineKeyboardButton(text="💎 Купить коины/премиум", callback_data="buy_contact")],
         [InlineKeyboardButton(text="🎁 Бонус (+6🪙/12ч)", callback_data="daily_bonus"),
          InlineKeyboardButton(text="💰 Баланс", callback_data="balance")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
@@ -133,25 +134,9 @@ def get_video_keyboard():
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
     ])
 
-def get_premium_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Купить премиум за 300⭐", callback_data="buy_premium")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
-    ])
-
-def get_buy_coins_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ 30 коинов (15⭐)", callback_data="buy_coins_30")],
-        [InlineKeyboardButton(text="⭐ 60 коинов (30⭐)", callback_data="buy_coins_60")],
-        [InlineKeyboardButton(text="⭐ 100 коинов (50⭐)", callback_data="buy_coins_100")],
-        [InlineKeyboardButton(text="⭐ 500 коинов (250⭐)", callback_data="buy_coins_500")],
-        [InlineKeyboardButton(text="⭐ 1000 коинов (500⭐)", callback_data="buy_coins_1000")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
-    ])
-
 def get_insufficient_coins_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Пополнить баланс", callback_data="buy_coins")],
+        [InlineKeyboardButton(text="💎 Купить коины", callback_data="buy_contact")],
         [InlineKeyboardButton(text="👥 Пригласить друга (+8🪙)", callback_data="invite")],
         [InlineKeyboardButton(text="🎁 Забрать бонус (+6🪙)", callback_data="daily_bonus")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
@@ -435,7 +420,7 @@ async def start(message: types.Message):
             "🎬 1 видео = 2 🪙\n"
             "🎁 Бонус каждые 12ч → +6🪙\n"
             "👥 Пригласи друга → +8🪙\n"
-            "⭐ Купи коины за Stars\n"
+            "💎 Покупка коинов/премиума — в ЛС @GendaleTray\n"
             "👑 Премиум 300⭐ → безлимит\n\n"
             "👇 *Выбери действие:*",
             reply_markup=get_main_keyboard(),
@@ -449,6 +434,30 @@ async def start(message: types.Message):
             parse_mode='Markdown'
         )
         dp['captcha_waiting'][user_id] = result['answer']
+
+# --- КНОПКА "КУПИТЬ" (СВЯЗЬ С МЕНЕДЖЕРОМ) ---
+@dp.callback_query(lambda c: c.data == "buy_contact")
+async def buy_contact(callback: types.CallbackQuery):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📩 Написать менеджеру", url="https://t.me/GendaleTray")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+    ])
+    await callback.message.edit_text(
+        "💎 *Покупка коинов и премиума*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💰 *Цены:*\n"
+        "• 30 коинов — 15 ⭐\n"
+        "• 60 коинов — 30 ⭐\n"
+        "• 100 коинов — 50 ⭐\n"
+        "• 500 коинов — 250 ⭐\n"
+        "• 1000 коинов — 500 ⭐\n"
+        "• Премиум (30 дней) — 300 ⭐\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📩 Для покупки напиши @GendaleTray\n"
+        "Укажи: что хочешь купить и свой ID (можно скопировать из бота).\n\n"
+        "⚠️ *Оплата только через Telegram Stars!*",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback.answer()
 
 # --- ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ---
 @dp.message()
@@ -486,35 +495,35 @@ async def handle_all_messages(message: types.Message):
             await message.answer("❌ Отправь число.")
         return
     
-    # СКРИНШОТЫ
+    # СКРИНШОТЫ (ОТПРАВЛЯЮТСЯ МЕНЕДЖЕРУ, НЕ В ЧАТ)
     if message.photo or message.document:
         submitted, approved, completed = get_task_status(user_id)
         if completed == 1:
             await message.answer("✅ Задание уже выполнено!", reply_markup=get_main_keyboard())
             return
         if submitted >= 10:
-            await message.answer(f"📋 Ты уже отправил {submitted} скриншотов.", reply_markup=get_main_keyboard())
+            await message.answer(f"📋 Ты уже отправил {submitted} скриншотов. Ожидай проверки.", reply_markup=get_main_keyboard())
             return
         
         file_id = message.photo[-1].file_id if message.photo else message.document.file_id
         new_submitted = add_screenshot(user_id, file_id, message.message_id)
-        cursor.execute('SELECT id FROM pending_screenshots WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
-        scr_id = cursor.fetchone()[0]
         
+        # Отправляем менеджеру, а не админу
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{scr_id}"),
-             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{scr_id}")]
+            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{user_id}"),
+             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}")]
         ])
         
-        caption = f"📸 *Новый скриншот*\n━━━━━━━━━━━━━━━━\n👤 Пользователь: {user_id}\n📊 Прогресс: {new_submitted}/10"
-        await bot.send_photo(ADMIN_IDS[0], photo=file_id, caption=caption, reply_markup=keyboard)
-        await message.answer(f"✅ Скриншот {new_submitted}/10 отправлен на проверку.", reply_markup=get_main_keyboard())
+        caption = f"📸 *Новый скриншот*\n━━━━━━━━━━━━━━━━\n👤 Пользователь: {user_id}\n📊 Прогресс: {new_submitted}/10\n━━━━━━━━━━━━━━━━"
+        await bot.send_photo(MANAGER_ID, photo=file_id, caption=caption, reply_markup=keyboard)
+        
+        await message.answer(f"✅ Скриншот {new_submitted}/10 отправлен менеджеру на проверку.", reply_markup=get_main_keyboard())
         return
     
     await message.answer("❌ Неизвестная команда. Используй /start", reply_markup=get_main_keyboard())
 
 # =================================================================
-# CALLBACK'И
+# ВСЕ CALLBACK'И
 # =================================================================
 
 @dp.callback_query(lambda c: c.data == "back_to_menu")
@@ -524,7 +533,7 @@ async def back_to_menu(callback: types.CallbackQuery):
         "🎬 1 видео = 2 🪙\n"
         "🎁 Бонус каждые 12ч → +6🪙\n"
         "👥 Пригласи друга → +8🪙\n"
-        "⭐ Купить коины\n"
+        "💎 Покупка — в ЛС @GendaleTray\n"
         "👑 Премиум 300⭐\n━━━━━━━━━━━━━━━━\n"
         "👇 *Выбери действие:*",
         reply_markup=get_main_keyboard(),
@@ -551,7 +560,7 @@ async def buy_video(callback: types.CallbackQuery):
             f"💡 *Как пополнить баланс?*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👥 Пригласи друга → +8 🪙\n"
-            f"⭐ Купи коины за Stars\n"
+            f"💎 Купи коины у @GendaleTray\n"
             f"🎁 Забери бонус → +6 🪙\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"👇 *Выбери способ пополнения:*",
@@ -673,34 +682,6 @@ async def invite(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "buy_coins")
-async def buy_coins_menu(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "⭐ *Покупка коинов* ⭐\n━━━━━━━━━━━━━━━━\n"
-        "💰 1 коин = 0.5 Stars\n"
-        "📦 От 30 до 1000 коинов\n━━━━━━━━━━━━━━━━\n"
-        "👇 *Выбери количество:*",
-        reply_markup=get_buy_coins_keyboard(),
-        parse_mode='Markdown'
-    )
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data.startswith("buy_coins_"))
-async def buy_coins(callback: types.CallbackQuery):
-    amount = int(callback.data.split('_')[2])
-    stars = amount // 2
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=f"Покупка {amount} коинов",
-        description=f"{amount} коинов для просмотра видео",
-        payload=f"coins_{amount}",
-        provider_token="",
-        currency="XTR",
-        prices=[LabeledPrice(label=f"{amount} коинов", amount=stars)],
-        start_parameter="buy_coins"
-    )
-    await callback.answer()
-
 @dp.callback_query(lambda c: c.data == "premium")
 async def premium_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -714,30 +695,20 @@ async def premium_menu(callback: types.CallbackQuery):
             parse_mode='Markdown'
         )
     else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Купить премиум", callback_data="buy_contact")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+        ])
         await callback.message.edit_text(
             "👑 *Премиум подписка* 👑\n━━━━━━━━━━━━━━━━\n"
             "💎 *Цена:* 300 ⭐\n"
             "🌟 *Преимущества:*\n"
             "• Безлимитный просмотр\n"
             "• +50 🪙 в подарок\n━━━━━━━━━━━━━━━━\n"
-            "👇 *Купить премиум:*",
-            reply_markup=get_premium_keyboard(),
+            "📩 Для покупки напиши @GendaleTray",
+            reply_markup=keyboard,
             parse_mode='Markdown'
         )
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "buy_premium")
-async def buy_premium(callback: types.CallbackQuery):
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title="Премиум 30 дней",
-        description="Безлимит +50 коинов",
-        payload="premium_30days",
-        provider_token="",
-        currency="XTR",
-        prices=[LabeledPrice(label="Премиум", amount=300)],
-        start_parameter="premium"
-    )
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "stats")
@@ -823,7 +794,7 @@ async def earn_callback(callback: types.CallbackQuery):
         "4️⃣ Поставь лайк\n"
         "5️⃣ Сделай скриншот\n━━━━━━━━━━━━━━━━\n"
         "📌 *Нужно 10 скриншотов!*\n"
-        "📸 Отправляй их в этом чате.\n━━━━━━━━━━━━━━━━"
+        "📸 Отправляй скриншоты @GendaleTray\n━━━━━━━━━━━━━━━━"
     )
     await callback.message.edit_text(instruction, reply_markup=get_back_keyboard(), parse_mode='Markdown')
     await callback.answer()
@@ -850,6 +821,66 @@ async def leaderboard(callback: types.CallbackQuery):
     text += "━━━━━━━━━━━━━━━━"
     
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode='Markdown')
+    await callback.answer()
+
+# --- ОДОБРЕНИЕ/ОТКЛОНЕНИЕ СКРИНШОТОВ (МЕНЕДЖЕР) ---
+@dp.callback_query(lambda c: c.data.startswith("approve_"))
+async def approve_screenshot(callback: types.CallbackQuery):
+    if callback.from_user.id != MANAGER_ID:
+        await callback.answer("❌ У вас нет прав.", show_alert=True)
+        return
+    
+    target_user = int(callback.data.split('_')[1])
+    
+    # Находим последний непроверенный скриншот пользователя
+    cursor.execute('SELECT id FROM pending_screenshots WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (target_user,))
+    row = cursor.fetchone()
+    if not row:
+        await callback.message.edit_text("❌ Нет скриншотов на проверку.")
+        await callback.answer()
+        return
+    
+    screenshot_id = row[0]
+    result = approve_screenshot(screenshot_id)
+    if not result:
+        await callback.message.edit_text("❌ Ошибка при одобрении.")
+        await callback.answer()
+        return
+    
+    user_id, completed, submitted, approved = result
+    await callback.message.edit_text(f"✅ Скриншот одобрен! Прогресс: {approved}/10")
+    
+    if completed:
+        await bot.send_message(target_user, "🎉 *Поздравляем!*\n━━━━━━━━━━━━━━━━\n✅ Ты выполнил задание!\n💰 +30 коинов начислено!\n━━━━━━━━━━━━━━━━", reply_markup=get_main_keyboard(), parse_mode='Markdown')
+    else:
+        await bot.send_message(target_user, f"✅ Один скриншот одобрен.\n📊 Прогресс: {approved}/10", reply_markup=get_main_keyboard())
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("reject_"))
+async def reject_screenshot(callback: types.CallbackQuery):
+    if callback.from_user.id != MANAGER_ID:
+        await callback.answer("❌ У вас нет прав.", show_alert=True)
+        return
+    
+    target_user = int(callback.data.split('_')[1])
+    
+    cursor.execute('SELECT id FROM pending_screenshots WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (target_user,))
+    row = cursor.fetchone()
+    if not row:
+        await callback.message.edit_text("❌ Нет скриншотов на проверку.")
+        await callback.answer()
+        return
+    
+    screenshot_id = row[0]
+    result = reject_screenshot(screenshot_id)
+    if not result:
+        await callback.message.edit_text("❌ Ошибка при отклонении.")
+        await callback.answer()
+        return
+    
+    user_id, submitted, approved = result
+    await callback.message.edit_text(f"❌ Скриншот отклонён. Прогресс: {approved}/10")
+    await bot.send_message(target_user, f"❌ *Скриншот отклонён.*\n📊 Прогресс: {approved}/10\n📸 Отправь новый скриншот.", reply_markup=get_main_keyboard())
     await callback.answer()
 
 # --- АДМИН-КОМАНДЫ ---
@@ -883,6 +914,37 @@ async def add_promo_command(message: types.Message):
     success, msg = create_promo_code(code, coins, premium_days, stars, max_uses, user_id)
     await message.answer(msg, parse_mode='Markdown')
 
+@dp.message(Command('give_coins'))
+async def give_coins_command(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("📝 /give_coins user_id amount", parse_mode='Markdown')
+        return
+    
+    try:
+        target_id = int(args[1])
+        amount = int(args[2])
+    except ValueError:
+        await message.answer("❌ ID и сумма должны быть числами.")
+        return
+    
+    target_user = get_user(target_id)
+    if not target_user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+    
+    update_coins(target_id, amount)
+    await message.answer(f"✅ Выдано {amount} 🪙 пользователю {target_id}.")
+    try:
+        await bot.send_message(target_id, f"💰 Вам начислено {amount} 🪙!", reply_markup=get_main_keyboard())
+    except:
+        pass
+
 @dp.message(Command('give_premium'))
 async def give_premium_command(message: types.Message):
     user_id = message.from_user.id
@@ -909,9 +971,8 @@ async def give_premium_command(message: types.Message):
     
     set_premium(target_id, days)
     await message.answer(f"✅ Премиум выдан {target_id} на {days} дней.")
-    
     try:
-        await bot.send_message(target_id, f"👑 Вам выдан премиум на {days} дней!")
+        await bot.send_message(target_id, f"👑 Вам выдан премиум на {days} дней!", reply_markup=get_main_keyboard())
     except:
         pass
 
@@ -941,39 +1002,10 @@ async def remove_premium_command(message: types.Message):
     cursor.execute('UPDATE users SET premium_until = NULL WHERE user_id = ?', (target_id,))
     conn.commit()
     await message.answer(f"✅ Премиум снят с {target_id}.")
-
-# --- ПЛАТЕЖИ ---
-
-@dp.pre_checkout_query()
-async def pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-@dp.message(lambda m: m.successful_payment)
-async def successful_payment(message: types.Message):
-    user_id = message.from_user.id
-    payload = message.successful_payment.invoice_payload
-    
-    if payload.startswith("premium"):
-        set_premium(user_id, 30)
-        update_coins(user_id, 50)
-        await message.answer(
-            "👑 *Премиум активирован!* 👑\n━━━━━━━━━━━━━━━━\n"
-            "✅ Безлимитный просмотр на 30 дней\n"
-            "🎁 +50 коинов в подарок\n━━━━━━━━━━━━━━━━",
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
-        )
-    elif payload.startswith("coins"):
-        coins = int(payload.split('_')[1])
-        update_coins(user_id, coins)
-        user = get_user(user_id)
-        await message.answer(
-            f"✅ *Покупка успешна!* ✅\n━━━━━━━━━━━━━━━━\n"
-            f"💰 +{coins} коинов\n"
-            f"🪙 Баланс: {user['coins']} 🪙\n━━━━━━━━━━━━━━━━",
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
-        )
+    try:
+        await bot.send_message(target_id, f"❌ Ваш премиум был снят.", reply_markup=get_main_keyboard())
+    except:
+        pass
 
 # =================================================================
 # ЗАПУСК
