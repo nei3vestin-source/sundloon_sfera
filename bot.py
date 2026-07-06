@@ -411,7 +411,38 @@ def get_task_status(user_id):
     return 0, 0, 0
 
 # =================================================================
-# ОБРАБОТЧИК КОМАНД (ВЫДАЧА КОИНОВ И ПРЕМИУМА) — ПЕРВЫЙ!
+# ОБРАБОТЧИКИ
+# =================================================================
+
+@dp.message(Command('start'))
+async def start(message: types.Message):
+    args = message.text.split()
+    referrer_code = args[1] if len(args) > 1 else None
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    if user:
+        await message.answer(
+            "✨ *Добро пожаловать обратно!* ✨\n\n"
+            "🎬 1 видео = 2 🪙\n"
+            "🎁 Бонус каждые 12ч → +6🪙\n"
+            "👥 Пригласи друга → +8🪙\n"
+            "💎 Покупка коинов/премиума — в ЛС @GendaleTray\n"
+            "👑 Премиум 300⭐ → безлимит\n\n"
+            "👇 *Выбери действие:*",
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
+        return
+    result = register_user(user_id, referrer_code)
+    if result and 'captcha' in result:
+        await message.answer(
+            f"🔐 *Добро пожаловать!*\nРеши пример:\n\n{result['captcha']} = ?\n\nОтправь число.",
+            parse_mode='Markdown'
+        )
+        dp['captcha_waiting'][user_id] = result['answer']
+
+# =================================================================
+# КОМАНДЫ ДЛЯ АДМИНА (ВЫДАЧА КОИНОВ И ПРЕМИУМА)
 # =================================================================
 
 @dp.message(Command('give_coins'))
@@ -537,35 +568,8 @@ async def add_promo_command(message: types.Message):
     await message.answer(msg, parse_mode='Markdown')
 
 # =================================================================
-# ОБРАБОТЧИК ВСЕХ ОСТАЛЬНЫХ СООБЩЕНИЙ
+# ОБРАБОТЧИК ВСЕХ ОСТАЛЬНЫХ СООБЩЕНИЙ (ПРОМОКОДЫ, КАПЧА, СКРИНШОТЫ)
 # =================================================================
-
-@dp.message(Command('start'))
-async def start(message: types.Message):
-    args = message.text.split()
-    referrer_code = args[1] if len(args) > 1 else None
-    user_id = message.from_user.id
-    user = get_user(user_id)
-    if user:
-        await message.answer(
-            "✨ *Добро пожаловать обратно!* ✨\n\n"
-            "🎬 1 видео = 2 🪙\n"
-            "🎁 Бонус каждые 12ч → +6🪙\n"
-            "👥 Пригласи друга → +8🪙\n"
-            "💎 Покупка коинов/премиума — в ЛС @GendaleTray\n"
-            "👑 Премиум 300⭐ → безлимит\n\n"
-            "👇 *Выбери действие:*",
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
-        )
-        return
-    result = register_user(user_id, referrer_code)
-    if result and 'captcha' in result:
-        await message.answer(
-            f"🔐 *Добро пожаловать!*\nРеши пример:\n\n{result['captcha']} = ?\n\nОтправь число.",
-            parse_mode='Markdown'
-        )
-        dp['captcha_waiting'][user_id] = result['answer']
 
 @dp.message()
 async def handle_all_messages(message: types.Message):
@@ -713,16 +717,61 @@ async def buy_video(callback: types.CallbackQuery):
         )
     await callback.answer()
 
-# Остальные callback'и (balance, daily_bonus, invite, premium, stats, promo_code, earn, leaderboard, approve, reject, buy_contact) такие же, как в предыдущей версии.
-# Для экономии места я их не копирую, но в полном файле они должны быть.
-# Если нужно — я выдам полный код целиком.
+@dp.callback_query(lambda c: c.data == "balance")
+async def balance(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user:
+        await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
+    
+    premium_text = "✅ активен" if is_premium(user_id) else "❌ нет"
+    await callback.message.edit_text(
+        f"💰 *Твой баланс* 💰\n━━━━━━━━━━━━━━━━\n"
+        f"🪙 *Коинов:* {user['coins']}\n"
+        f"🎬 *Просмотрено:* {user['total_videos']}\n"
+        f"👥 *Заработано:* {user['total_earned']} 🪙\n"
+        f"👑 *Премиум:* {premium_text}\n━━━━━━━━━━━━━━━━",
+        reply_markup=get_back_keyboard(),
+        parse_mode='Markdown'
+    )
+    await callback.answer()
 
-# =================================================================
-# ЗАПУСК
-# =================================================================
+@dp.callback_query(lambda c: c.data == "daily_bonus")
+async def daily_bonus(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user:
+        await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
+    
+    if can_claim_bonus(user_id):
+        claim_bonus(user_id)
+        user = get_user(user_id)
+        await callback.message.edit_text(
+            f"🎁 *Бонус получен!* 🎁\n━━━━━━━━━━━━━━━━\n"
+            f"+6 🪙\n"
+            f"💰 *Баланс:* {user['coins']} 🪙\n━━━━━━━━━━━━━━━━\n"
+            f"⏰ Следующий бонус через 12 часов.",
+            reply_markup=get_back_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        next_time = get_next_bonus_time(user_id)
+        if next_time:
+            remaining = next_time - datetime.now()
+            hours = remaining.seconds // 3600
+            minutes = (remaining.seconds % 3600) // 60
+            await callback.message.edit_text(
+                f"⏰ *Бонус пока недоступен*\n━━━━━━━━━━━━━━━━\n"
+                f"Следующий бонус через {hours} ч {minutes} мин.",
+                reply_markup=get_back_keyboard(),
+                parse_mode='Markdown'
+            )
+    await callback.answer()
 
-async def main():
-    await dp.start_polling(bot, tasks_concurrency_limit=100)
-
-if __name__ == '__main__':
-    asyncio.run(main())
+@dp.callback_query(lambda c: c.data == "invite")
+async def invite(callback: types.CallbackQuery):
+    user_id = callback
