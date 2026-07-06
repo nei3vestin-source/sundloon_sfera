@@ -10,7 +10,7 @@ from aiogram.filters import Command
 
 API_TOKEN = '8663984903:AAGKuNOjEEArgkKQtsIRBGW8dAtVipx_HGg'
 ADMIN_IDS = [8251761249, 7799646371, 8734624959]
-MANAGER_ID = 8734624959  # ID менеджера (GendaleTray)
+MANAGER_ID = 8251761249
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -141,6 +141,12 @@ def get_insufficient_coins_keyboard():
         [InlineKeyboardButton(text="🎁 Забрать бонус (+6🪙)", callback_data="daily_bonus")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
     ])
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+def is_manager(user_id):
+    return user_id == MANAGER_ID
 
 # =================================================================
 # ЗАЩИТА ОТ ПОВТОРОВ
@@ -495,7 +501,7 @@ async def handle_all_messages(message: types.Message):
             await message.answer("❌ Отправь число.")
         return
     
-    # СКРИНШОТЫ (ОТПРАВЛЯЮТСЯ МЕНЕДЖЕРУ, НЕ В ЧАТ)
+    # СКРИНШОТЫ (ОТПРАВЛЯЮТСЯ МЕНЕДЖЕРУ)
     if message.photo or message.document:
         submitted, approved, completed = get_task_status(user_id)
         if completed == 1:
@@ -508,7 +514,6 @@ async def handle_all_messages(message: types.Message):
         file_id = message.photo[-1].file_id if message.photo else message.document.file_id
         new_submitted = add_screenshot(user_id, file_id, message.message_id)
         
-        # Отправляем менеджеру, а не админу
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{user_id}"),
              InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}")]
@@ -826,13 +831,12 @@ async def leaderboard(callback: types.CallbackQuery):
 # --- ОДОБРЕНИЕ/ОТКЛОНЕНИЕ СКРИНШОТОВ (МЕНЕДЖЕР) ---
 @dp.callback_query(lambda c: c.data.startswith("approve_"))
 async def approve_screenshot(callback: types.CallbackQuery):
-    if callback.from_user.id != MANAGER_ID:
+    if not is_manager(callback.from_user.id):
         await callback.answer("❌ У вас нет прав.", show_alert=True)
         return
     
     target_user = int(callback.data.split('_')[1])
     
-    # Находим последний непроверенный скриншот пользователя
     cursor.execute('SELECT id FROM pending_screenshots WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (target_user,))
     row = cursor.fetchone()
     if not row:
@@ -858,7 +862,7 @@ async def approve_screenshot(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("reject_"))
 async def reject_screenshot(callback: types.CallbackQuery):
-    if callback.from_user.id != MANAGER_ID:
+    if not is_manager(callback.from_user.id):
         await callback.answer("❌ У вас нет прав.", show_alert=True)
         return
     
@@ -888,7 +892,7 @@ async def reject_screenshot(callback: types.CallbackQuery):
 @dp.message(Command('add_promo'))
 async def add_promo_command(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in ADMIN_IDS:
+    if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
     
@@ -917,7 +921,7 @@ async def add_promo_command(message: types.Message):
 @dp.message(Command('give_coins'))
 async def give_coins_command(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in ADMIN_IDS:
+    if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
     
@@ -948,7 +952,7 @@ async def give_coins_command(message: types.Message):
 @dp.message(Command('give_premium'))
 async def give_premium_command(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in ADMIN_IDS:
+    if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
     
@@ -979,7 +983,7 @@ async def give_premium_command(message: types.Message):
 @dp.message(Command('remove_premium'))
 async def remove_premium_command(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in ADMIN_IDS:
+    if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
     
