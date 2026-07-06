@@ -34,7 +34,8 @@ cursor.execute('''
         pending_captcha TEXT,
         pending_referrer INTEGER,
         premium_until TEXT,
-        video_history TEXT DEFAULT ''
+        video_history TEXT DEFAULT '',
+        start_date TEXT
     )
 ''')
 cursor.execute('''
@@ -90,6 +91,13 @@ cursor.execute('''
     )
 ''')
 conn.commit()
+
+# --- БЕЗОПАСНОЕ ДОБАВЛЕНИЕ КОЛОНКИ start_date (если отсутствует) ---
+cursor.execute("PRAGMA table_info(users)")
+columns = [col[1] for col in cursor.fetchall()]
+if 'start_date' not in columns:
+    cursor.execute('ALTER TABLE users ADD COLUMN start_date TEXT')
+    conn.commit()
 
 # --- ВИДЕО (1-100) ---
 def add_videos_if_empty():
@@ -282,9 +290,9 @@ def register_user(user_id, referrer_code=None):
         if ref:
             referrer_id = ref[0]
     cursor.execute('''
-        INSERT INTO users (user_id, coins, referrer_id, pending_captcha, pending_referrer)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, 0, referrer_id, captcha, referrer_id))
+        INSERT INTO users (user_id, coins, referrer_id, pending_captcha, pending_referrer, start_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, 0, referrer_id, captcha, referrer_id, datetime.now().isoformat()))
     conn.commit()
     return {'captcha': captcha, 'answer': answer, 'referrer_id': referrer_id}
 
@@ -306,47 +314,58 @@ def process_captcha(user_id, user_answer):
     return False
 
 def create_promo_code(code, coins, premium_days, stars, max_uses, admin_id):
+    """Создает промокод с проверкой валидности"""
+    if coins <= 0 and premium_days <= 0 and stars <= 0:
+        return False, "❌ Промокод должен давать хотя бы одну награду (коины, премиум или звёзды)"
+    if coins < 0 or premium_days < 0 or stars < 0 or max_uses < 1:
+        return False, "❌ Значения не могут быть отрицательными, а max_uses >= 1"
     try:
         cursor.execute('''
             INSERT INTO promocodes (code, reward_coins, reward_premium_days, reward_stars, max_uses, used_count, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (code, coins, premium_days, stars, max_uses, 0, admin_id))
+        ''', (code.upper(), coins, premium_days, stars, max_uses, 0, admin_id))
         conn.commit()
-        return True, "✅ Промокод создан!"
+        rewards = []
+        if coins > 0:
+            rewards.append(f"{coins} 🪙")
+        if premium_days > 0:
+            rewards.append(f"{premium_days} дней 👑")
+        if stars > 0:
+            rewards.append(f"{stars} ⭐")
+        return True, f"✅ Промокод создан!\n📝 Код: `{code.upper()}`\n🎁 Награды: {', '.join(rewards)}\n🔄 Использований: {max_uses}"
     except sqlite3.IntegrityError:
         return False, "❌ Промокод с таким названием уже существует."
 
 def activate_promo_code(user_id, code):
-    cursor.execute('SELECT reward_coins, reward_premium_days, reward_stars, max_uses, used_count FROM promocodes WHERE code = ?', (code,))
+    """Активирует промокод с обновлением статистики"""
+    cursor.execute('SELECT reward_coins, reward_premium_days, reward_stars, max_uses, used_count FROM promocodes WHERE code = ?', (code.upper(),))
     promo = cursor.fetchone()
     if not promo:
         return False, "❌ Промокод не найден"
-    
     reward_coins, reward_premium_days, reward_stars, max_uses, used_count = promo
     if used_count >= max_uses:
         return False, "❌ Промокод уже использован максимальное количество раз"
-    
-    cursor.execute('SELECT 1 FROM promo_uses WHERE user_id = ? AND code = ?', (user_id, code))
+    cursor.execute('SELECT 1 FROM promo_uses WHERE user_id = ? AND code = ?', (user_id, code.upper()))
     if cursor.fetchone():
         return False, "❌ Ты уже использовал этот промокод"
-    
     msg_parts = []
+    total_earned = 0
     if reward_coins > 0:
-        cursor.execute('UPDATE users SET coins = coins + ? WHERE user_id = ?', (reward_coins, user_id))
+        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', (reward_coins, reward_coins, user_id))
         msg_parts.append(f"💰 +{reward_coins} коинов")
+        total_earned += reward_coins
     if reward_premium_days > 0:
         set_premium(user_id, reward_premium_days)
         msg_parts.append(f"👑 +{reward_premium_days} дней премиума")
     if reward_stars > 0:
-        cursor.execute('UPDATE users SET coins = coins + ? WHERE user_id = ?', (reward_stars * 2, user_id))
-        msg_parts.append(f"⭐ +{reward_stars} звёзд")
-    
-    cursor.execute('INSERT INTO promo_uses (user_id, code, used_at) VALUES (?, ?, ?)',
-                   (user_id, code, datetime.now().isoformat()))
-    cursor.execute('UPDATE promocodes SET used_count = used_count + 1 WHERE code = ?', (code,))
+        star_coins = reward_stars * 2
+        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', (star_coins, star_coins, user_id))
+        msg_parts.append(f"⭐ +{reward_stars} звёзд ({star_coins} коинов)")
+        total_earned += star_coins
+    cursor.execute('INSERT INTO promo_uses (user_id, code, used_at) VALUES (?, ?, ?)', (user_id, code.upper(), datetime.now().isoformat()))
+    cursor.execute('UPDATE promocodes SET used_count = used_count + 1 WHERE code = ?', (code.upper(),))
     conn.commit()
-    
-    return True, "✅ *Промокод активирован!*\n\n" + "\n".join(msg_parts)
+    return True, f"✅ *Промокод активирован!*\n\n" + "\n".join(msg_parts)
 
 def start_task(user_id):
     cursor.execute('SELECT task_completed FROM user_tasks WHERE user_id = ?', (user_id,))
@@ -411,6 +430,40 @@ def get_task_status(user_id):
     return 0, 0, 0
 
 # =================================================================
+# НОВЫЕ ФУНКЦИИ ДЛЯ СТАТИСТИКИ
+# =================================================================
+
+def log_user_start(user_id):
+    """Логирует дату первого запуска бота пользователем"""
+    cursor.execute('SELECT start_date FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    if row and row[0] is None:
+        cursor.execute('UPDATE users SET start_date = ? WHERE user_id = ?', (datetime.now().isoformat(), user_id))
+        conn.commit()
+        return True
+    return False
+
+def get_user_stats():
+    """Возвращает общую статистику по пользователям"""
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM users WHERE start_date IS NOT NULL')
+    started_users = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM users WHERE premium_until IS NOT NULL AND premium_until > ?', (datetime.now().isoformat(),))
+    premium_users = cursor.fetchone()[0]
+    cursor.execute('SELECT SUM(coins) FROM users')
+    total_coins = cursor.fetchone()[0] or 0
+    cursor.execute('SELECT SUM(total_earned) FROM users')
+    total_earned = cursor.fetchone()[0] or 0
+    return {
+        'total_users': total_users,
+        'started_users': started_users,
+        'premium_users': premium_users,
+        'total_coins': total_coins,
+        'total_earned': total_earned
+    }
+
+# =================================================================
 # ОБРАБОТЧИКИ
 # =================================================================
 
@@ -419,6 +472,10 @@ async def start(message: types.Message):
     args = message.text.split()
     referrer_code = args[1] if len(args) > 1 else None
     user_id = message.from_user.id
+    
+    # Логируем запуск (если первый раз)
+    log_user_start(user_id)
+    
     user = get_user(user_id)
     if user:
         await message.answer(
@@ -927,7 +984,7 @@ async def give_coins_command(message: types.Message):
     
     args = message.text.split()
     if len(args) < 3:
-        await message.answer("📝 /give_coins user_id amount", parse_mode='Markdown')
+        await message.answer("📝 `/give_coins user_id amount`\nПример: `/give_coins 123456789 100`", parse_mode='Markdown')
         return
     
     try:
@@ -937,15 +994,29 @@ async def give_coins_command(message: types.Message):
         await message.answer("❌ ID и сумма должны быть числами.")
         return
     
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть положительной.")
+        return
+    
     target_user = get_user(target_id)
     if not target_user:
         await message.answer(f"❌ Пользователь {target_id} не найден.")
         return
     
-    update_coins(target_id, amount)
-    await message.answer(f"✅ Выдано {amount} 🪙 пользователю {target_id}.")
+    # Выдаем коины с обновлением total_earned
+    cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', (amount, amount, target_id))
+    conn.commit()
+    
+    new_balance = target_user['coins'] + amount
+    await message.answer(f"✅ Выдано {amount} 🪙 пользователю {target_id}.\n📊 Новый баланс: {new_balance} 🪙")
+    
     try:
-        await bot.send_message(target_id, f"💰 Вам начислено {amount} 🪙!", reply_markup=get_main_keyboard())
+        await bot.send_message(
+            target_id,
+            f"💰 *Вам начислено {amount} 🪙!*\n📊 Баланс: {new_balance} 🪙",
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
     except:
         pass
 
@@ -958,7 +1029,7 @@ async def give_premium_command(message: types.Message):
     
     args = message.text.split()
     if len(args) < 3:
-        await message.answer("📝 /give_premium user_id days", parse_mode='Markdown')
+        await message.answer("📝 `/give_premium user_id days`\nПример: `/give_premium 123456789 30`", parse_mode='Markdown')
         return
     
     try:
@@ -968,15 +1039,26 @@ async def give_premium_command(message: types.Message):
         await message.answer("❌ ID и дни должны быть числами.")
         return
     
+    if days <= 0:
+        await message.answer("❌ Количество дней должно быть положительным.")
+        return
+    
     target_user = get_user(target_id)
     if not target_user:
         await message.answer(f"❌ Пользователь {target_id} не найден.")
         return
     
     set_premium(target_id, days)
-    await message.answer(f"✅ Премиум выдан {target_id} на {days} дней.")
+    until = (datetime.now() + timedelta(days=days)).strftime('%d.%m.%Y')
+    await message.answer(f"✅ Премиум выдан {target_id} на {days} дней.\n📅 До: {until}")
+    
     try:
-        await bot.send_message(target_id, f"👑 Вам выдан премиум на {days} дней!", reply_markup=get_main_keyboard())
+        await bot.send_message(
+            target_id,
+            f"👑 *Вам выдан премиум на {days} дней!*\n📅 Действует до: {until}\n🎬 Безлимитный просмотр видео!",
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
     except:
         pass
 
@@ -1010,6 +1092,66 @@ async def remove_premium_command(message: types.Message):
         await bot.send_message(target_id, f"❌ Ваш премиум был снят.", reply_markup=get_main_keyboard())
     except:
         pass
+
+# --- НОВЫЕ АДМИН-КОМАНДЫ ---
+
+@dp.message(Command('stats_users'))
+async def stats_users_command(message: types.Message):
+    """Команда для просмотра статистики пользователей (только для админов)"""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    stats = get_user_stats()
+    text = (
+        f"📊 *Статистика бота* 📊\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 *Всего пользователей:* {stats['total_users']}\n"
+        f"🆕 *Запустили бота:* {stats['started_users']}\n"
+        f"👑 *Премиум:* {stats['premium_users']}\n"
+        f"💰 *Всего коинов:* {stats['total_coins']}\n"
+        f"💎 *Заработано всего:* {stats['total_earned']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await message.answer(text, parse_mode='Markdown')
+
+@dp.message(Command('list_promocodes'))
+async def list_promocodes_command(message: types.Message):
+    """Команда для просмотра всех промокодов (только для админов)"""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    cursor.execute('''
+        SELECT code, reward_coins, reward_premium_days, reward_stars, max_uses, used_count, created_by 
+        FROM promocodes 
+        ORDER BY created_by DESC
+    ''')
+    promocodes = cursor.fetchall()
+    
+    if not promocodes:
+        await message.answer("📝 Нет созданных промокодов.", parse_mode='Markdown')
+        return
+    
+    text = "📋 *Список промокодов* 📋\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    for promo in promocodes:
+        code, coins, days, stars, max_uses, used_count, created_by = promo
+        rewards = []
+        if coins > 0:
+            rewards.append(f"{coins}🪙")
+        if days > 0:
+            rewards.append(f"{days}д👑")
+        if stars > 0:
+            rewards.append(f"{stars}⭐")
+        text += (
+            f"🔹 `{code}`\n"
+            f"   🎁 {', '.join(rewards)}\n"
+            f"   📊 {used_count}/{max_uses}\n"
+            f"   👤 {created_by}\n\n"
+        )
+    await message.answer(text, parse_mode='Markdown')
 
 # =================================================================
 # ЗАПУСК
