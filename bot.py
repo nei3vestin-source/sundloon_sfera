@@ -464,7 +464,7 @@ def get_user_stats():
     }
 
 # =================================================================
-# ОБРАБОТЧИКИ
+# ОБРАБОТЧИКИ КОМАНД (ОБЯЗАТЕЛЬНО РАНЬШЕ ОБЩЕГО ОБРАБОТЧИКА)
 # =================================================================
 
 @dp.message(Command('start'))
@@ -495,35 +495,305 @@ async def start(message: types.Message):
         )
         dp['captcha_waiting'][user_id] = result['answer']
 
-# --- КНОПКА "КУПИТЬ" (СВЯЗЬ С МЕНЕДЖЕРОМ) ---
-@dp.callback_query(lambda c: c.data == "buy_contact")
-async def buy_contact(callback: types.CallbackQuery):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📩 Написать менеджеру", url="https://t.me/GendaleTray")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
-    ])
-    await callback.message.edit_text(
-        "💎 *Покупка коинов и премиума*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💰 *Цены:*\n"
-        "• 30 коинов — 15 ⭐\n"
-        "• 60 коинов — 30 ⭐\n"
-        "• 100 коинов — 50 ⭐\n"
-        "• 500 коинов — 250 ⭐\n"
-        "• 1000 коинов — 500 ⭐\n"
-        "• Премиум (30 дней) — 300 ⭐\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📩 Для покупки напиши @GendaleTray\n"
-        "Укажи: что хочешь купить и свой ID (можно скопировать из бота).\n\n"
-        "⚠️ *Оплата только через Telegram Stars!*",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await callback.answer()
+@dp.message(Command('add_promo'))
+async def add_promo_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "📝 *Формат:* `/add_promo код [coins] [premium_days] [stars] [max_uses]`\n"
+            "Пример: `/add_promo FREE1000 1000 0 0 50`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    try:
+        code = args[1].upper()
+        coins = int(args[2]) if len(args) > 2 else 0
+        premium_days = int(args[3]) if len(args) > 3 else 0
+        stars = int(args[4]) if len(args) > 4 else 0
+        max_uses = int(args[5]) if len(args) > 5 else 1
+    except ValueError:
+        await message.answer("❌ Все аргументы должны быть числами (кроме кода).")
+        return
+    
+    success, msg = create_promo_code(code, coins, premium_days, stars, max_uses, user_id)
+    await message.answer(msg, parse_mode='Markdown')
 
-# --- ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ---
+@dp.message(Command('give_coins'))
+async def give_coins_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("📝 `/give_coins user_id amount`\nПример: `/give_coins 123456789 100`", parse_mode='Markdown')
+        return
+    
+    try:
+        target_id = int(args[1])
+        amount = int(args[2])
+    except ValueError:
+        await message.answer("❌ ID и сумма должны быть числами.")
+        return
+    
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть положительной.")
+        return
+    
+    target_user = get_user(target_id)
+    if not target_user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+    
+    cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', (amount, amount, target_id))
+    conn.commit()
+    
+    new_balance = target_user['coins'] + amount
+    await message.answer(f"✅ Выдано {amount} 🪙 пользователю {target_id}.\n📊 Новый баланс: {new_balance} 🪙")
+    
+    try:
+        await bot.send_message(
+            target_id,
+            f"💰 *Вам начислено {amount} 🪙!*\n📊 Баланс: {new_balance} 🪙",
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
+    except:
+        pass
+
+@dp.message(Command('give_premium'))
+async def give_premium_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("📝 `/give_premium user_id days`\nПример: `/give_premium 123456789 30`", parse_mode='Markdown')
+        return
+    
+    try:
+        target_id = int(args[1])
+        days = int(args[2])
+    except ValueError:
+        await message.answer("❌ ID и дни должны быть числами.")
+        return
+    
+    if days <= 0:
+        await message.answer("❌ Количество дней должно быть положительным.")
+        return
+    
+    target_user = get_user(target_id)
+    if not target_user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+    
+    set_premium(target_id, days)
+    until = (datetime.now() + timedelta(days=days)).strftime('%d.%m.%Y')
+    await message.answer(f"✅ Премиум выдан {target_id} на {days} дней.\n📅 До: {until}")
+    
+    try:
+        await bot.send_message(
+            target_id,
+            f"👑 *Вам выдан премиум на {days} дней!*\n📅 Действует до: {until}\n🎬 Безлимитный просмотр видео!",
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
+    except:
+        pass
+
+@dp.message(Command('remove_premium'))
+async def remove_premium_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("📝 /remove_premium user_id", parse_mode='Markdown')
+        return
+    
+    try:
+        target_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ ID должен быть числом.")
+        return
+    
+    target_user = get_user(target_id)
+    if not target_user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+    
+    cursor.execute('UPDATE users SET premium_until = NULL WHERE user_id = ?', (target_id,))
+    conn.commit()
+    await message.answer(f"✅ Премиум снят с {target_id}.")
+    try:
+        await bot.send_message(target_id, f"❌ Ваш премиум был снят.", reply_markup=get_main_keyboard())
+    except:
+        pass
+
+@dp.message(Command('stats_users'))
+async def stats_users_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    stats = get_user_stats()
+    text = (
+        f"📊 *Статистика бота* 📊\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 *Всего пользователей:* {stats['total_users']}\n"
+        f"🆕 *Запустили бота:* {stats['started_users']}\n"
+        f"👑 *Премиум:* {stats['premium_users']}\n"
+        f"💰 *Всего коинов:* {stats['total_coins']}\n"
+        f"💎 *Заработано всего:* {stats['total_earned']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await message.answer(text, parse_mode='Markdown')
+
+@dp.message(Command('list_promocodes'))
+async def list_promocodes_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    cursor.execute('''
+        SELECT code, reward_coins, reward_premium_days, reward_stars, max_uses, used_count, created_by 
+        FROM promocodes 
+        ORDER BY created_by DESC
+    ''')
+    promocodes = cursor.fetchall()
+    
+    if not promocodes:
+        await message.answer("📝 Нет созданных промокодов.", parse_mode='Markdown')
+        return
+    
+    text = "📋 *Список промокодов* 📋\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    for promo in promocodes:
+        code, coins, days, stars, max_uses, used_count, created_by = promo
+        rewards = []
+        if coins > 0:
+            rewards.append(f"{coins}🪙")
+        if days > 0:
+            rewards.append(f"{days}д👑")
+        if stars > 0:
+            rewards.append(f"{stars}⭐")
+        text += (
+            f"🔹 `{code}`\n"
+            f"   🎁 {', '.join(rewards)}\n"
+            f"   📊 {used_count}/{max_uses}\n"
+            f"   👤 {created_by}\n\n"
+        )
+    await message.answer(text, parse_mode='Markdown')
+
+@dp.message(Command('give_all_coins'))
+async def give_all_coins(message: types.Message):
+    """Выдать коины ВСЕМ пользователям (админ)"""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("📝 `/give_all_coins <количество>`\nПример: `/give_all_coins 10`", parse_mode='Markdown')
+        return
+    
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await message.answer("❌ Количество должно быть числом.")
+        return
+    
+    if amount <= 0:
+        await message.answer("❌ Количество должно быть положительным.")
+        return
+    
+    cursor.execute('SELECT user_id FROM users')
+    all_users = cursor.fetchall()
+    if not all_users:
+        await message.answer("❌ В базе нет пользователей.")
+        return
+    
+    count = 0
+    for (uid,) in all_users:
+        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
+                      (amount, amount, uid))
+        count += 1
+        try:
+            await bot.send_message(uid, f"💰 Админ выдал всем +{amount} 🪙!", reply_markup=get_main_keyboard())
+        except:
+            pass
+    
+    conn.commit()
+    await message.answer(f"✅ Выдано {amount} 🪙 {count} пользователям.")
+
+@dp.message(Command('give_active_coins'))
+async def give_active_coins(message: types.Message):
+    """Выдать коины только АКТИВНЫМ пользователям (у кого есть start_date)"""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("📝 `/give_active_coins <количество>`\nПример: `/give_active_coins 10`", parse_mode='Markdown')
+        return
+    
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await message.answer("❌ Количество должно быть числом.")
+        return
+    
+    if amount <= 0:
+        await message.answer("❌ Количество должно быть положительным.")
+        return
+    
+    cursor.execute('SELECT user_id FROM users WHERE start_date IS NOT NULL')
+    active_users = cursor.fetchall()
+    if not active_users:
+        await message.answer("❌ Активных пользователей нет.")
+        return
+    
+    count = 0
+    for (uid,) in active_users:
+        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
+                      (amount, amount, uid))
+        count += 1
+        try:
+            await bot.send_message(uid, f"💰 Админ выдал активным +{amount} 🪙!", reply_markup=get_main_keyboard())
+        except:
+            pass
+    
+    conn.commit()
+    await message.answer(f"✅ Выдано {amount} 🪙 {count} активным пользователям.")
+
+# =================================================================
+# ОБЩИЙ ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (ДОЛЖЕН БЫТЬ ПОСЛЕ ВСЕХ КОМАНД)
+# =================================================================
+
 @dp.message()
 async def handle_all_messages(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
+    
+    # Если сообщение начинается с "/" – это неизвестная команда, просто игнорируем или отвечаем один раз
+    if text.startswith('/'):
+        await message.answer("❌ Неизвестная команда. Используй /start")
+        return
     
     # ПРОМОКОД
     if dp['waiting_for_promo'].get(user_id):
@@ -579,11 +849,35 @@ async def handle_all_messages(message: types.Message):
         await message.answer(f"✅ Скриншот {new_submitted}/10 отправлен менеджеру на проверку.", reply_markup=get_main_keyboard())
         return
     
+    # Если ничего не подошло – просто игнорируем (или можно ответить)
     await message.answer("❌ Неизвестная команда. Используй /start", reply_markup=get_main_keyboard())
 
 # =================================================================
-# ВСЕ CALLBACK'И
+# ВСЕ CALLBACK'И (ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ)
 # =================================================================
+
+@dp.callback_query(lambda c: c.data == "buy_contact")
+async def buy_contact(callback: types.CallbackQuery):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📩 Написать менеджеру", url="https://t.me/GendaleTray")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+    ])
+    await callback.message.edit_text(
+        "💎 *Покупка коинов и премиума*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💰 *Цены:*\n"
+        "• 30 коинов — 15 ⭐\n"
+        "• 60 коинов — 30 ⭐\n"
+        "• 100 коинов — 50 ⭐\n"
+        "• 500 коинов — 250 ⭐\n"
+        "• 1000 коинов — 500 ⭐\n"
+        "• Премиум (30 дней) — 300 ⭐\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📩 Для покупки напиши @GendaleTray\n"
+        "Укажи: что хочешь купить и свой ID (можно скопировать из бота).\n\n"
+        "⚠️ *Оплата только через Telegram Stars!*",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery):
@@ -940,296 +1234,6 @@ async def reject_screenshot(callback: types.CallbackQuery):
     await callback.message.edit_text(f"❌ Скриншот отклонён. Прогресс: {approved}/10")
     await bot.send_message(target_user, f"❌ *Скриншот отклонён.*\n📊 Прогресс: {approved}/10\n📸 Отправь новый скриншот.", reply_markup=get_main_keyboard())
     await callback.answer()
-
-# --- АДМИН-КОМАНДЫ ---
-
-@dp.message(Command('add_promo'))
-async def add_promo_command(message: types.Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer(
-            "📝 *Формат:* `/add_promo код [coins] [premium_days] [stars] [max_uses]`\n"
-            "Пример: `/add_promo FREE1000 1000 0 0 50`",
-            parse_mode='Markdown'
-        )
-        return
-    
-    try:
-        code = args[1].upper()
-        coins = int(args[2]) if len(args) > 2 else 0
-        premium_days = int(args[3]) if len(args) > 3 else 0
-        stars = int(args[4]) if len(args) > 4 else 0
-        max_uses = int(args[5]) if len(args) > 5 else 1
-    except ValueError:
-        await message.answer("❌ Все аргументы должны быть числами (кроме кода).")
-        return
-    
-    success, msg = create_promo_code(code, coins, premium_days, stars, max_uses, user_id)
-    await message.answer(msg, parse_mode='Markdown')
-
-@dp.message(Command('give_coins'))
-async def give_coins_command(message: types.Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    args = message.text.split()
-    if len(args) < 3:
-        await message.answer("📝 `/give_coins user_id amount`\nПример: `/give_coins 123456789 100`", parse_mode='Markdown')
-        return
-    
-    try:
-        target_id = int(args[1])
-        amount = int(args[2])
-    except ValueError:
-        await message.answer("❌ ID и сумма должны быть числами.")
-        return
-    
-    if amount <= 0:
-        await message.answer("❌ Сумма должна быть положительной.")
-        return
-    
-    target_user = get_user(target_id)
-    if not target_user:
-        await message.answer(f"❌ Пользователь {target_id} не найден.")
-        return
-    
-    cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', (amount, amount, target_id))
-    conn.commit()
-    
-    new_balance = target_user['coins'] + amount
-    await message.answer(f"✅ Выдано {amount} 🪙 пользователю {target_id}.\n📊 Новый баланс: {new_balance} 🪙")
-    
-    try:
-        await bot.send_message(
-            target_id,
-            f"💰 *Вам начислено {amount} 🪙!*\n📊 Баланс: {new_balance} 🪙",
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
-        )
-    except:
-        pass
-
-@dp.message(Command('give_premium'))
-async def give_premium_command(message: types.Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    args = message.text.split()
-    if len(args) < 3:
-        await message.answer("📝 `/give_premium user_id days`\nПример: `/give_premium 123456789 30`", parse_mode='Markdown')
-        return
-    
-    try:
-        target_id = int(args[1])
-        days = int(args[2])
-    except ValueError:
-        await message.answer("❌ ID и дни должны быть числами.")
-        return
-    
-    if days <= 0:
-        await message.answer("❌ Количество дней должно быть положительным.")
-        return
-    
-    target_user = get_user(target_id)
-    if not target_user:
-        await message.answer(f"❌ Пользователь {target_id} не найден.")
-        return
-    
-    set_premium(target_id, days)
-    until = (datetime.now() + timedelta(days=days)).strftime('%d.%m.%Y')
-    await message.answer(f"✅ Премиум выдан {target_id} на {days} дней.\n📅 До: {until}")
-    
-    try:
-        await bot.send_message(
-            target_id,
-            f"👑 *Вам выдан премиум на {days} дней!*\n📅 Действует до: {until}\n🎬 Безлимитный просмотр видео!",
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
-        )
-    except:
-        pass
-
-@dp.message(Command('remove_premium'))
-async def remove_premium_command(message: types.Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("📝 /remove_premium user_id", parse_mode='Markdown')
-        return
-    
-    try:
-        target_id = int(args[1])
-    except ValueError:
-        await message.answer("❌ ID должен быть числом.")
-        return
-    
-    target_user = get_user(target_id)
-    if not target_user:
-        await message.answer(f"❌ Пользователь {target_id} не найден.")
-        return
-    
-    cursor.execute('UPDATE users SET premium_until = NULL WHERE user_id = ?', (target_id,))
-    conn.commit()
-    await message.answer(f"✅ Премиум снят с {target_id}.")
-    try:
-        await bot.send_message(target_id, f"❌ Ваш премиум был снят.", reply_markup=get_main_keyboard())
-    except:
-        pass
-
-@dp.message(Command('stats_users'))
-async def stats_users_command(message: types.Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    stats = get_user_stats()
-    text = (
-        f"📊 *Статистика бота* 📊\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 *Всего пользователей:* {stats['total_users']}\n"
-        f"🆕 *Запустили бота:* {stats['started_users']}\n"
-        f"👑 *Премиум:* {stats['premium_users']}\n"
-        f"💰 *Всего коинов:* {stats['total_coins']}\n"
-        f"💎 *Заработано всего:* {stats['total_earned']}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
-    )
-    await message.answer(text, parse_mode='Markdown')
-
-@dp.message(Command('list_promocodes'))
-async def list_promocodes_command(message: types.Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    cursor.execute('''
-        SELECT code, reward_coins, reward_premium_days, reward_stars, max_uses, used_count, created_by 
-        FROM promocodes 
-        ORDER BY created_by DESC
-    ''')
-    promocodes = cursor.fetchall()
-    
-    if not promocodes:
-        await message.answer("📝 Нет созданных промокодов.", parse_mode='Markdown')
-        return
-    
-    text = "📋 *Список промокодов* 📋\n━━━━━━━━━━━━━━━━━━━━━━\n"
-    for promo in promocodes:
-        code, coins, days, stars, max_uses, used_count, created_by = promo
-        rewards = []
-        if coins > 0:
-            rewards.append(f"{coins}🪙")
-        if days > 0:
-            rewards.append(f"{days}д👑")
-        if stars > 0:
-            rewards.append(f"{stars}⭐")
-        text += (
-            f"🔹 `{code}`\n"
-            f"   🎁 {', '.join(rewards)}\n"
-            f"   📊 {used_count}/{max_uses}\n"
-            f"   👤 {created_by}\n\n"
-        )
-    await message.answer(text, parse_mode='Markdown')
-
-# --- НОВЫЕ КОМАНДЫ ДЛЯ МАССОВОЙ ВЫДАЧИ КОИНОВ ---
-
-@dp.message(Command('give_all_coins'))
-async def give_all_coins(message: types.Message):
-    """Выдать коины ВСЕМ пользователям (админ)"""
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("📝 `/give_all_coins <количество>`\nПример: `/give_all_coins 10`", parse_mode='Markdown')
-        return
-    
-    try:
-        amount = int(args[1])
-    except ValueError:
-        await message.answer("❌ Количество должно быть числом.")
-        return
-    
-    if amount <= 0:
-        await message.answer("❌ Количество должно быть положительным.")
-        return
-    
-    cursor.execute('SELECT user_id FROM users')
-    all_users = cursor.fetchall()
-    if not all_users:
-        await message.answer("❌ В базе нет пользователей.")
-        return
-    
-    count = 0
-    for (uid,) in all_users:
-        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
-                      (amount, amount, uid))
-        count += 1
-        try:
-            await bot.send_message(uid, f"💰 Админ выдал всем +{amount} 🪙!", reply_markup=get_main_keyboard())
-        except:
-            pass
-    
-    conn.commit()
-    await message.answer(f"✅ Выдано {amount} 🪙 {count} пользователям.")
-
-@dp.message(Command('give_active_coins'))
-async def give_active_coins(message: types.Message):
-    """Выдать коины только АКТИВНЫМ пользователям (у кого есть start_date)"""
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("📝 `/give_active_coins <количество>`\nПример: `/give_active_coins 10`", parse_mode='Markdown')
-        return
-    
-    try:
-        amount = int(args[1])
-    except ValueError:
-        await message.answer("❌ Количество должно быть числом.")
-        return
-    
-    if amount <= 0:
-        await message.answer("❌ Количество должно быть положительным.")
-        return
-    
-    cursor.execute('SELECT user_id FROM users WHERE start_date IS NOT NULL')
-    active_users = cursor.fetchall()
-    if not active_users:
-        await message.answer("❌ Активных пользователей нет.")
-        return
-    
-    count = 0
-    for (uid,) in active_users:
-        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
-                      (amount, amount, uid))
-        count += 1
-        try:
-            await bot.send_message(uid, f"💰 Админ выдал активным +{amount} 🪙!", reply_markup=get_main_keyboard())
-        except:
-            pass
-    
-    conn.commit()
-    await message.answer(f"✅ Выдано {amount} 🪙 {count} активным пользователям.")
 
 # =================================================================
 # ЗАПУСК
