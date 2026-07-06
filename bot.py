@@ -887,7 +887,9 @@ async def reject_screenshot(callback: types.CallbackQuery):
     await bot.send_message(target_user, f"❌ *Скриншот отклонён.*\n📊 Прогресс: {approved}/10\n📸 Отправь новый скриншот.", reply_markup=get_main_keyboard())
     await callback.answer()
 
-# --- АДМИН-КОМАНДЫ ---
+# =================================================================
+# АДМИН-КОМАНДЫ (ВЫДАЧА КОИНОВ И ПРЕМИУМА)
+# =================================================================
 
 @dp.message(Command('add_promo'))
 async def add_promo_command(message: types.Message):
