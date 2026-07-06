@@ -430,7 +430,7 @@ def get_task_status(user_id):
     return 0, 0, 0
 
 # =================================================================
-# НОВЫЕ ФУНКЦИИ ДЛЯ СТАТИСТИКИ
+# ФУНКЦИИ ДЛЯ СТАТИСТИКИ
 # =================================================================
 
 def log_user_start(user_id):
@@ -472,10 +472,7 @@ async def start(message: types.Message):
     args = message.text.split()
     referrer_code = args[1] if len(args) > 1 else None
     user_id = message.from_user.id
-    
-    # Логируем запуск (если первый раз)
     log_user_start(user_id)
-    
     user = get_user(user_id)
     if user:
         await message.answer(
@@ -1003,7 +1000,6 @@ async def give_coins_command(message: types.Message):
         await message.answer(f"❌ Пользователь {target_id} не найден.")
         return
     
-    # Выдаем коины с обновлением total_earned
     cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', (amount, amount, target_id))
     conn.commit()
     
@@ -1093,11 +1089,8 @@ async def remove_premium_command(message: types.Message):
     except:
         pass
 
-# --- НОВЫЕ АДМИН-КОМАНДЫ ---
-
 @dp.message(Command('stats_users'))
 async def stats_users_command(message: types.Message):
-    """Команда для просмотра статистики пользователей (только для админов)"""
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
@@ -1118,7 +1111,6 @@ async def stats_users_command(message: types.Message):
 
 @dp.message(Command('list_promocodes'))
 async def list_promocodes_command(message: types.Message):
-    """Команда для просмотра всех промокодов (только для админов)"""
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
@@ -1152,6 +1144,92 @@ async def list_promocodes_command(message: types.Message):
             f"   👤 {created_by}\n\n"
         )
     await message.answer(text, parse_mode='Markdown')
+
+# --- НОВЫЕ КОМАНДЫ ДЛЯ МАССОВОЙ ВЫДАЧИ КОИНОВ ---
+
+@dp.message(Command('give_all_coins'))
+async def give_all_coins(message: types.Message):
+    """Выдать коины ВСЕМ пользователям (админ)"""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("📝 `/give_all_coins <количество>`\nПример: `/give_all_coins 10`", parse_mode='Markdown')
+        return
+    
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await message.answer("❌ Количество должно быть числом.")
+        return
+    
+    if amount <= 0:
+        await message.answer("❌ Количество должно быть положительным.")
+        return
+    
+    cursor.execute('SELECT user_id FROM users')
+    all_users = cursor.fetchall()
+    if not all_users:
+        await message.answer("❌ В базе нет пользователей.")
+        return
+    
+    count = 0
+    for (uid,) in all_users:
+        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
+                      (amount, amount, uid))
+        count += 1
+        try:
+            await bot.send_message(uid, f"💰 Админ выдал всем +{amount} 🪙!", reply_markup=get_main_keyboard())
+        except:
+            pass
+    
+    conn.commit()
+    await message.answer(f"✅ Выдано {amount} 🪙 {count} пользователям.")
+
+@dp.message(Command('give_active_coins'))
+async def give_active_coins(message: types.Message):
+    """Выдать коины только АКТИВНЫМ пользователям (у кого есть start_date)"""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("📝 `/give_active_coins <количество>`\nПример: `/give_active_coins 10`", parse_mode='Markdown')
+        return
+    
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await message.answer("❌ Количество должно быть числом.")
+        return
+    
+    if amount <= 0:
+        await message.answer("❌ Количество должно быть положительным.")
+        return
+    
+    cursor.execute('SELECT user_id FROM users WHERE start_date IS NOT NULL')
+    active_users = cursor.fetchall()
+    if not active_users:
+        await message.answer("❌ Активных пользователей нет.")
+        return
+    
+    count = 0
+    for (uid,) in active_users:
+        cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
+                      (amount, amount, uid))
+        count += 1
+        try:
+            await bot.send_message(uid, f"💰 Админ выдал активным +{amount} 🪙!", reply_markup=get_main_keyboard())
+        except:
+            pass
+    
+    conn.commit()
+    await message.answer(f"✅ Выдано {amount} 🪙 {count} активным пользователям.")
 
 # =================================================================
 # ЗАПУСК
