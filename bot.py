@@ -5,12 +5,12 @@ import string
 import asyncio
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 
-API_TOKEN = '8663984903:AAGKuNOjEEArgkKQtsIRBGW8dAtVipx_HGg'
+API_TOKEN = '8845345010:AAEnZiB2yGIM5Iwn55Y-kHlCHr81yGF-d20'
 ADMIN_IDS = [8251761249, 7799646371, 8734624959]
-MANAGER_ID = 8251761249
+CHANNEL_ID = '@XalaTGK'
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -35,7 +35,8 @@ cursor.execute('''
         pending_referrer INTEGER,
         premium_until TEXT,
         video_history TEXT DEFAULT '',
-        start_date TEXT
+        start_date TEXT,
+        channel_subscribed INTEGER DEFAULT 0
     )
 ''')
 cursor.execute('''
@@ -92,14 +93,17 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# --- БЕЗОПАСНОЕ ДОБАВЛЕНИЕ КОЛОНКИ start_date (если отсутствует) ---
+# --- БЕЗОПАСНОЕ ДОБАВЛЕНИЕ КОЛОНОК ---
 cursor.execute("PRAGMA table_info(users)")
 columns = [col[1] for col in cursor.fetchall()]
 if 'start_date' not in columns:
     cursor.execute('ALTER TABLE users ADD COLUMN start_date TEXT')
     conn.commit()
+if 'channel_subscribed' not in columns:
+    cursor.execute('ALTER TABLE users ADD COLUMN channel_subscribed INTEGER DEFAULT 0')
+    conn.commit()
 
-# --- ВИДЕО (1-100) ---
+# --- ВИДЕО ---
 def add_videos_if_empty():
     cursor.execute('SELECT COUNT(*) FROM videos')
     if cursor.fetchone()[0] == 0:
@@ -150,52 +154,42 @@ def get_insufficient_coins_keyboard():
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
     ])
 
+def get_channel_sub_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://t.me/XalaTGK")],
+        [InlineKeyboardButton(text="✅ Я подписался!", callback_data="check_subscription")]
+    ])
+
+def get_buy_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 Купить в @XalaTGK", url="https://t.me/XalaTGK")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+    ])
+
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
-def is_manager(user_id):
-    return user_id == MANAGER_ID
-
 # =================================================================
-# ЗАЩИТА ОТ ПОВТОРОВ
+# ПРОВЕРКА ПОДПИСКИ
 # =================================================================
 
-def get_random_video_except_last(user_id):
-    cursor.execute('SELECT url, price FROM videos WHERE is_active = 1')
-    all_videos = cursor.fetchall()
-    if not all_videos:
-        return None
-    
-    cursor.execute('SELECT video_history FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
-    history = row[0] if row and row[0] else ""
-    history_list = history.split(',') if history else []
-    
-    if len(history_list) < 5:
-        selected = random.choice(all_videos)
-        update_video_history(user_id, selected[0])
-        return selected
-    
-    exclude_urls = history_list[-5:]
-    candidates = [v for v in all_videos if v[0] not in exclude_urls]
-    if not candidates:
-        candidates = all_videos
-    
-    selected = random.choice(candidates)
-    update_video_history(user_id, selected[0])
-    return selected
+async def check_subscription(user_id):
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except:
+        return False
 
-def update_video_history(user_id, video_url):
-    cursor.execute('SELECT video_history FROM users WHERE user_id = ?', (user_id,))
+async def require_subscription(user_id):
+    cursor.execute('SELECT channel_subscribed FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
-    history = row[0] if row and row[0] else ""
-    history_list = history.split(',') if history else []
-    history_list.append(video_url)
-    if len(history_list) > 20:
-        history_list = history_list[-20:]
-    new_history = ','.join(history_list)
-    cursor.execute('UPDATE users SET video_history = ? WHERE user_id = ?', (new_history, user_id))
-    conn.commit()
+    if row and row[0] == 1:
+        return True
+    if await check_subscription(user_id):
+        cursor.execute('UPDATE users SET channel_subscribed = 1 WHERE user_id = ?', (user_id,))
+        conn.commit()
+        return True
+    return False
 
 # =================================================================
 # ФУНКЦИИ
@@ -290,9 +284,9 @@ def register_user(user_id, referrer_code=None):
         if ref:
             referrer_id = ref[0]
     cursor.execute('''
-        INSERT INTO users (user_id, coins, referrer_id, pending_captcha, pending_referrer, start_date)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (user_id, 0, referrer_id, captcha, referrer_id, datetime.now().isoformat()))
+        INSERT INTO users (user_id, coins, referrer_id, pending_captcha, pending_referrer, start_date, channel_subscribed)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, 0, referrer_id, captcha, referrer_id, datetime.now().isoformat(), 0))
     conn.commit()
     return {'captcha': captcha, 'answer': answer, 'referrer_id': referrer_id}
 
@@ -314,11 +308,10 @@ def process_captcha(user_id, user_answer):
     return False
 
 def create_promo_code(code, coins, premium_days, stars, max_uses, admin_id):
-    """Создает промокод с проверкой валидности"""
     if coins <= 0 and premium_days <= 0 and stars <= 0:
-        return False, "❌ Промокод должен давать хотя бы одну награду (коины, премиум или звёзды)"
+        return False, "❌ Промокод должен давать хотя бы одну награду"
     if coins < 0 or premium_days < 0 or stars < 0 or max_uses < 1:
-        return False, "❌ Значения не могут быть отрицательными, а max_uses >= 1"
+        return False, "❌ Значения не могут быть отрицательными"
     try:
         cursor.execute('''
             INSERT INTO promocodes (code, reward_coins, reward_premium_days, reward_stars, max_uses, used_count, created_by)
@@ -337,7 +330,6 @@ def create_promo_code(code, coins, premium_days, stars, max_uses, admin_id):
         return False, "❌ Промокод с таким названием уже существует."
 
 def activate_promo_code(user_id, code):
-    """Активирует промокод с обновлением статистики"""
     cursor.execute('SELECT reward_coins, reward_premium_days, reward_stars, max_uses, used_count FROM promocodes WHERE code = ?', (code.upper(),))
     promo = cursor.fetchone()
     if not promo:
@@ -429,12 +421,7 @@ def get_task_status(user_id):
         return row[0], row[1], row[2]
     return 0, 0, 0
 
-# =================================================================
-# ФУНКЦИИ ДЛЯ СТАТИСТИКИ
-# =================================================================
-
 def log_user_start(user_id):
-    """Логирует дату первого запуска бота пользователем"""
     cursor.execute('SELECT start_date FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     if row and row[0] is None:
@@ -444,7 +431,6 @@ def log_user_start(user_id):
     return False
 
 def get_user_stats():
-    """Возвращает общую статистику по пользователям"""
     cursor.execute('SELECT COUNT(*) FROM users')
     total_users = cursor.fetchone()[0]
     cursor.execute('SELECT COUNT(*) FROM users WHERE start_date IS NOT NULL')
@@ -464,7 +450,7 @@ def get_user_stats():
     }
 
 # =================================================================
-# ОБРАБОТЧИКИ КОМАНД (ОБЯЗАТЕЛЬНО РАНЬШЕ ОБЩЕГО ОБРАБОТЧИКА)
+# КОМАНДЫ БОТА
 # =================================================================
 
 @dp.message(Command('start'))
@@ -475,13 +461,31 @@ async def start(message: types.Message):
     log_user_start(user_id)
     user = get_user(user_id)
     if user:
+        if not await require_subscription(user_id):
+            await message.answer(
+                "🌟 *Добро пожаловать в Xala Video!* 🌟\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🎬 *1 видео = 2 🪙*\n"
+                "🎁 *Бонус каждые 12ч → +6🪙*\n"
+                "👥 *Пригласи друга → +8🪙*\n"
+                "👑 *Премиум → безлимит*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "📢 *Чтобы продолжить, подпишись на канал:*\n"
+                "➡️ @XalaTGK\n\n"
+                "👇 *Нажми кнопку после подписки:*",
+                reply_markup=get_channel_sub_keyboard(),
+                parse_mode='Markdown'
+            )
+            return
         await message.answer(
-            "✨ *Добро пожаловать обратно!* ✨\n\n"
+            "✨ *Добро пожаловать обратно!* ✨\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🎬 1 видео = 2 🪙\n"
             "🎁 Бонус каждые 12ч → +6🪙\n"
             "👥 Пригласи друга → +8🪙\n"
-            "💎 Покупка коинов/премиума — в ЛС @GendaleTray\n"
-            "👑 Премиум 300⭐ → безлимит\n\n"
+            "💎 Покупка коинов/премиума → @XalaTGK\n"
+            "👑 Премиум → безлимит\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "👇 *Выбери действие:*",
             reply_markup=get_main_keyboard(),
             parse_mode='Markdown'
@@ -490,7 +494,11 @@ async def start(message: types.Message):
     result = register_user(user_id, referrer_code)
     if result and 'captcha' in result:
         await message.answer(
-            f"🔐 *Добро пожаловать!*\nРеши пример:\n\n{result['captcha']} = ?\n\nОтправь число.",
+            "🔐 *Добро пожаловать в Xala Video!*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📝 *Реши пример для регистрации:*\n\n"
+            f"🧮 {result['captcha']} = ?\n\n"
+            "💡 *Отправь число в чат.*",
             parse_mode='Markdown'
         )
         dp['captcha_waiting'][user_id] = result['answer']
@@ -501,7 +509,6 @@ async def add_promo_command(message: types.Message):
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
-    
     args = message.text.split()
     if len(args) < 2:
         await message.answer(
@@ -510,7 +517,6 @@ async def add_promo_command(message: types.Message):
             parse_mode='Markdown'
         )
         return
-    
     try:
         code = args[1].upper()
         coins = int(args[2]) if len(args) > 2 else 0
@@ -520,7 +526,6 @@ async def add_promo_command(message: types.Message):
     except ValueError:
         await message.answer("❌ Все аргументы должны быть числами (кроме кода).")
         return
-    
     success, msg = create_promo_code(code, coins, premium_days, stars, max_uses, user_id)
     await message.answer(msg, parse_mode='Markdown')
 
@@ -530,34 +535,27 @@ async def give_coins_command(message: types.Message):
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
-    
     args = message.text.split()
     if len(args) < 3:
         await message.answer("📝 `/give_coins user_id amount`\nПример: `/give_coins 123456789 100`", parse_mode='Markdown')
         return
-    
     try:
         target_id = int(args[1])
         amount = int(args[2])
     except ValueError:
         await message.answer("❌ ID и сумма должны быть числами.")
         return
-    
     if amount <= 0:
         await message.answer("❌ Сумма должна быть положительной.")
         return
-    
     target_user = get_user(target_id)
     if not target_user:
         await message.answer(f"❌ Пользователь {target_id} не найден.")
         return
-    
     cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', (amount, amount, target_id))
     conn.commit()
-    
     new_balance = target_user['coins'] + amount
     await message.answer(f"✅ Выдано {amount} 🪙 пользователю {target_id}.\n📊 Новый баланс: {new_balance} 🪙")
-    
     try:
         await bot.send_message(
             target_id,
@@ -574,32 +572,26 @@ async def give_premium_command(message: types.Message):
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
-    
     args = message.text.split()
     if len(args) < 3:
         await message.answer("📝 `/give_premium user_id days`\nПример: `/give_premium 123456789 30`", parse_mode='Markdown')
         return
-    
     try:
         target_id = int(args[1])
         days = int(args[2])
     except ValueError:
         await message.answer("❌ ID и дни должны быть числами.")
         return
-    
     if days <= 0:
         await message.answer("❌ Количество дней должно быть положительным.")
         return
-    
     target_user = get_user(target_id)
     if not target_user:
         await message.answer(f"❌ Пользователь {target_id} не найден.")
         return
-    
     set_premium(target_id, days)
     until = (datetime.now() + timedelta(days=days)).strftime('%d.%m.%Y')
     await message.answer(f"✅ Премиум выдан {target_id} на {days} дней.\n📅 До: {until}")
-    
     try:
         await bot.send_message(
             target_id,
@@ -616,23 +608,19 @@ async def remove_premium_command(message: types.Message):
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
-    
     args = message.text.split()
     if len(args) < 2:
         await message.answer("📝 /remove_premium user_id", parse_mode='Markdown')
         return
-    
     try:
         target_id = int(args[1])
     except ValueError:
         await message.answer("❌ ID должен быть числом.")
         return
-    
     target_user = get_user(target_id)
     if not target_user:
         await message.answer(f"❌ Пользователь {target_id} не найден.")
         return
-    
     cursor.execute('UPDATE users SET premium_until = NULL WHERE user_id = ?', (target_id,))
     conn.commit()
     await message.answer(f"✅ Премиум снят с {target_id}.")
@@ -644,22 +632,35 @@ async def remove_premium_command(message: types.Message):
 @dp.message(Command('stats_users'))
 async def stats_users_command(message: types.Message):
     user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав.")
+    user = get_user(user_id)
+    if not user:
+        await message.answer("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         return
-    
-    stats = get_user_stats()
+    cursor.execute('SELECT COUNT(*) FROM users WHERE referrer_id = ?', (user_id,))
+    invited = cursor.fetchone()[0]
     text = (
-        f"📊 *Статистика бота* 📊\n"
+        f"📊 *Твоя статистика* 📊\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 *Всего пользователей:* {stats['total_users']}\n"
-        f"🆕 *Запустили бота:* {stats['started_users']}\n"
-        f"👑 *Премиум:* {stats['premium_users']}\n"
-        f"💰 *Всего коинов:* {stats['total_coins']}\n"
-        f"💎 *Заработано всего:* {stats['total_earned']}\n"
+        f"🪙 *Коинов:* {user['coins']}\n"
+        f"🎬 *Просмотрено:* {user['total_videos']}\n"
+        f"👥 *Заработано:* {user['total_earned']} 🪙\n"
+        f"👥 *Приглашено:* {invited}\n"
+        f"👑 *Премиум:* {'✅ активен' if is_premium(user_id) else '❌ нет'}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
-    await message.answer(text, parse_mode='Markdown')
+    if is_admin(user_id):
+        stats = get_user_stats()
+        text += (
+            f"\n\n📊 *Общая статистика бота*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 *Всего пользователей:* {stats['total_users']}\n"
+            f"🆕 *Запустили бота:* {stats['started_users']}\n"
+            f"👑 *Премиум:* {stats['premium_users']}\n"
+            f"💰 *Всего коинов:* {stats['total_coins']}\n"
+            f"💎 *Заработано всего:* {stats['total_earned']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+    await message.answer(text, parse_mode='Markdown', reply_markup=get_back_keyboard())
 
 @dp.message(Command('list_promocodes'))
 async def list_promocodes_command(message: types.Message):
@@ -667,18 +668,15 @@ async def list_promocodes_command(message: types.Message):
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
-    
     cursor.execute('''
         SELECT code, reward_coins, reward_premium_days, reward_stars, max_uses, used_count, created_by 
         FROM promocodes 
         ORDER BY created_by DESC
     ''')
     promocodes = cursor.fetchall()
-    
     if not promocodes:
         await message.answer("📝 Нет созданных промокодов.", parse_mode='Markdown')
         return
-    
     text = "📋 *Список промокодов* 📋\n━━━━━━━━━━━━━━━━━━━━━━\n"
     for promo in promocodes:
         code, coins, days, stars, max_uses, used_count, created_by = promo
@@ -699,33 +697,27 @@ async def list_promocodes_command(message: types.Message):
 
 @dp.message(Command('give_all_coins'))
 async def give_all_coins(message: types.Message):
-    """Выдать коины ВСЕМ пользователям (админ)"""
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
-    
     args = message.text.split()
     if len(args) < 2:
         await message.answer("📝 `/give_all_coins <количество>`\nПример: `/give_all_coins 10`", parse_mode='Markdown')
         return
-    
     try:
         amount = int(args[1])
     except ValueError:
         await message.answer("❌ Количество должно быть числом.")
         return
-    
     if amount <= 0:
         await message.answer("❌ Количество должно быть положительным.")
         return
-    
     cursor.execute('SELECT user_id FROM users')
     all_users = cursor.fetchall()
     if not all_users:
         await message.answer("❌ В базе нет пользователей.")
         return
-    
     count = 0
     for (uid,) in all_users:
         cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
@@ -735,39 +727,32 @@ async def give_all_coins(message: types.Message):
             await bot.send_message(uid, f"💰 Админ выдал всем +{amount} 🪙!", reply_markup=get_main_keyboard())
         except:
             pass
-    
     conn.commit()
     await message.answer(f"✅ Выдано {amount} 🪙 {count} пользователям.")
 
 @dp.message(Command('give_active_coins'))
 async def give_active_coins(message: types.Message):
-    """Выдать коины только АКТИВНЫМ пользователям (у кого есть start_date)"""
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав.")
         return
-    
     args = message.text.split()
     if len(args) < 2:
         await message.answer("📝 `/give_active_coins <количество>`\nПример: `/give_active_coins 10`", parse_mode='Markdown')
         return
-    
     try:
         amount = int(args[1])
     except ValueError:
         await message.answer("❌ Количество должно быть числом.")
         return
-    
     if amount <= 0:
         await message.answer("❌ Количество должно быть положительным.")
         return
-    
     cursor.execute('SELECT user_id FROM users WHERE start_date IS NOT NULL')
     active_users = cursor.fetchall()
     if not active_users:
         await message.answer("❌ Активных пользователей нет.")
         return
-    
     count = 0
     for (uid,) in active_users:
         cursor.execute('UPDATE users SET coins = coins + ?, total_earned = total_earned + ? WHERE user_id = ?', 
@@ -777,32 +762,25 @@ async def give_active_coins(message: types.Message):
             await bot.send_message(uid, f"💰 Админ выдал активным +{amount} 🪙!", reply_markup=get_main_keyboard())
         except:
             pass
-    
     conn.commit()
     await message.answer(f"✅ Выдано {amount} 🪙 {count} активным пользователям.")
 
 # =================================================================
-# ОБЩИЙ ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (ДОЛЖЕН БЫТЬ ПОСЛЕ ВСЕХ КОМАНД)
+# ОБЩИЙ ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ
 # =================================================================
 
 @dp.message()
 async def handle_all_messages(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
-    
-    # Если сообщение начинается с "/" – это неизвестная команда, просто игнорируем или отвечаем один раз
     if text.startswith('/'):
         await message.answer("❌ Неизвестная команда. Используй /start")
         return
-    
-    # ПРОМОКОД
     if dp['waiting_for_promo'].get(user_id):
         del dp['waiting_for_promo'][user_id]
         success, msg = activate_promo_code(user_id, text)
         await message.answer(msg, reply_markup=get_main_keyboard(), parse_mode='Markdown')
         return
-    
-    # КАПЧА
     if dp['captcha_waiting'].get(user_id):
         try:
             answer = int(text)
@@ -811,10 +789,14 @@ async def handle_all_messages(message: types.Message):
                 del dp['captcha_waiting'][user_id]
                 if process_captcha(user_id, answer):
                     await message.answer(
-                        "✅ *Регистрация завершена!*\n━━━━━━━━━━━━━━━━\n"
-                        "🎁 Ты получил 10 коинов.\n"
-                        "👥 Твой друг получил 8 коинов.\n━━━━━━━━━━━━━━━━",
-                        reply_markup=get_main_keyboard(),
+                        "✅ *Регистрация завершена!* 🎉\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        "🎁 Ты получил 10 коинов!\n"
+                        "👥 Твой друг получил 8 коинов!\n\n"
+                        "📢 *Теперь подпишись на канал:*\n"
+                        "➡️ @XalaTGK\n\n"
+                        "👇 *Нажми кнопку после подписки:*",
+                        reply_markup=get_channel_sub_keyboard(),
                         parse_mode='Markdown'
                     )
                 else:
@@ -824,8 +806,6 @@ async def handle_all_messages(message: types.Message):
         except ValueError:
             await message.answer("❌ Отправь число.")
         return
-    
-    # СКРИНШОТЫ (ОТПРАВЛЯЮТСЯ МЕНЕДЖЕРУ)
     if message.photo or message.document:
         submitted, approved, completed = get_task_status(user_id)
         if completed == 1:
@@ -834,60 +814,89 @@ async def handle_all_messages(message: types.Message):
         if submitted >= 10:
             await message.answer(f"📋 Ты уже отправил {submitted} скриншотов. Ожидай проверки.", reply_markup=get_main_keyboard())
             return
-        
         file_id = message.photo[-1].file_id if message.photo else message.document.file_id
         new_submitted = add_screenshot(user_id, file_id, message.message_id)
-        
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{user_id}"),
              InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}")]
         ])
-        
         caption = f"📸 *Новый скриншот*\n━━━━━━━━━━━━━━━━\n👤 Пользователь: {user_id}\n📊 Прогресс: {new_submitted}/10\n━━━━━━━━━━━━━━━━"
-        await bot.send_photo(MANAGER_ID, photo=file_id, caption=caption, reply_markup=keyboard)
-        
-        await message.answer(f"✅ Скриншот {new_submitted}/10 отправлен менеджеру на проверку.", reply_markup=get_main_keyboard())
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_photo(admin_id, photo=file_id, caption=caption, reply_markup=keyboard)
+            except:
+                pass
+        await message.answer(f"✅ Скриншот {new_submitted}/10 отправлен на проверку.", reply_markup=get_main_keyboard())
         return
-    
-    # Если ничего не подошло – просто игнорируем (или можно ответить)
     await message.answer("❌ Неизвестная команда. Используй /start", reply_markup=get_main_keyboard())
 
 # =================================================================
-# ВСЕ CALLBACK'И (ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ)
+# ВСЕ CALLBACK'И
 # =================================================================
+
+@dp.callback_query(lambda c: c.data == "check_subscription")
+async def check_subscription_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if await check_subscription(user_id):
+        cursor.execute('UPDATE users SET channel_subscribed = 1 WHERE user_id = ?', (user_id,))
+        conn.commit()
+        await callback.message.edit_text(
+            "✅ *Подписка подтверждена!* 🎉\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🌟 Добро пожаловать в Xala Video!\n"
+            "🎬 Смотри видео и зарабатывай коины!\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "👇 *Выбери действие:*",
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        await callback.answer("❌ Ты ещё не подписался на канал! Подпишись и нажми кнопку снова.", show_alert=True)
 
 @dp.callback_query(lambda c: c.data == "buy_contact")
 async def buy_contact(callback: types.CallbackQuery):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📩 Написать менеджеру", url="https://t.me/GendaleTray")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
-    ])
     await callback.message.edit_text(
-        "💎 *Покупка коинов и премиума*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💎 *Покупка коинов и премиума* 💎\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "💰 *Цены:*\n"
         "• 30 коинов — 15 ⭐\n"
         "• 60 коинов — 30 ⭐\n"
         "• 100 коинов — 50 ⭐\n"
         "• 500 коинов — 250 ⭐\n"
         "• 1000 коинов — 500 ⭐\n"
-        "• Премиум (30 дней) — 300 ⭐\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📩 Для покупки напиши @GendaleTray\n"
-        "Укажи: что хочешь купить и свой ID (можно скопировать из бота).\n\n"
-        "⚠️ *Оплата только через Telegram Stars!*",
-        reply_markup=keyboard,
+        "• Премиум (30 дней) — 300 ⭐\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📩 *Для покупки напиши в канал:*\n"
+        "➡️ @XalaTGK\n\n"
+        "💬 *Укажи:* что хочешь купить и свой ID\n"
+        "⚠️ *Оплата через Telegram Stars!*",
+        reply_markup=get_buy_keyboard(),
         parse_mode='Markdown'
     )
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not await require_subscription(user_id):
+        await callback.message.edit_text(
+            "📢 *Для доступа нужно подписаться на канал:*\n"
+            "➡️ @XalaTGK\n\n"
+            "👇 *Нажми кнопку после подписки:*",
+            reply_markup=get_channel_sub_keyboard(),
+            parse_mode='Markdown'
+        )
+        await callback.answer()
+        return
     await callback.message.edit_text(
-        "✨ *Главное меню* ✨\n━━━━━━━━━━━━━━━━\n"
+        "✨ *Главное меню* ✨\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🎬 1 видео = 2 🪙\n"
         "🎁 Бонус каждые 12ч → +6🪙\n"
         "👥 Пригласи друга → +8🪙\n"
-        "💎 Покупка — в ЛС @GendaleTray\n"
-        "👑 Премиум 300⭐\n━━━━━━━━━━━━━━━━\n"
+        "💎 Покупка — в @XalaTGK\n"
+        "👑 Премиум → безлимит\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "👇 *Выбери действие:*",
         reply_markup=get_main_keyboard(),
         parse_mode='Markdown'
@@ -897,12 +906,21 @@ async def back_to_menu(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "buy_video")
 async def buy_video(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    if not await require_subscription(user_id):
+        await callback.message.edit_text(
+            "📢 *Для просмотра видео нужно подписаться на канал!*\n"
+            "➡️ @XalaTGK\n\n"
+            "👇 *Нажми кнопку после подписки:*",
+            reply_markup=get_channel_sub_keyboard(),
+            parse_mode='Markdown'
+        )
+        await callback.answer()
+        return
     user = get_user(user_id)
     if not user:
         await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
-    
     if not is_premium(user_id) and user['coins'] < 2:
         await callback.message.edit_text(
             f"❌ *Недостаточно коинов!*\n\n"
@@ -913,7 +931,7 @@ async def buy_video(callback: types.CallbackQuery):
             f"💡 *Как пополнить баланс?*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👥 Пригласи друга → +8 🪙\n"
-            f"💎 Купи коины у @GendaleTray\n"
+            f"💎 Купи коины в @XalaTGK\n"
             f"🎁 Забери бонус → +6 🪙\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"👇 *Выбери способ пополнения:*",
@@ -922,13 +940,11 @@ async def buy_video(callback: types.CallbackQuery):
         )
         await callback.answer()
         return
-    
     video_data = get_random_video_except_last(user_id)
     if not video_data:
         await callback.message.edit_text("❌ Видео пока нет. Попробуй позже.", reply_markup=get_back_keyboard())
         await callback.answer()
         return
-    
     video_url, price = video_data
     if not is_premium(user_id):
         spend_coins(user_id, price)
@@ -936,15 +952,16 @@ async def buy_video(callback: types.CallbackQuery):
     user = get_user(user_id)
     new_balance = user['coins']
     total_watched = user['total_videos']
-    
     try:
         await bot.send_video(
             chat_id=user_id,
             video=video_url,
-            caption=f"🎬 *Твоё видео!* 🎬\n━━━━━━━━━━━━━━━━\n"
+            caption=f"🎬 *Твоё видео!* 🎬\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 *Просмотрено:* {total_watched} видео\n"
                     f"💸 *Списано:* {price if not is_premium(user_id) else 0} 🪙\n"
-                    f"💰 *Осталось:* {new_balance} 🪙\n━━━━━━━━━━━━━━━━",
+                    f"💰 *Осталось:* {new_balance} 🪙\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode='Markdown',
             reply_markup=get_video_keyboard()
         )
@@ -968,14 +985,15 @@ async def balance(callback: types.CallbackQuery):
         await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
-    
     premium_text = "✅ активен" if is_premium(user_id) else "❌ нет"
     await callback.message.edit_text(
-        f"💰 *Твой баланс* 💰\n━━━━━━━━━━━━━━━━\n"
+        f"💰 *Твой баланс* 💰\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 *Коинов:* {user['coins']}\n"
         f"🎬 *Просмотрено:* {user['total_videos']}\n"
         f"👥 *Заработано:* {user['total_earned']} 🪙\n"
-        f"👑 *Премиум:* {premium_text}\n━━━━━━━━━━━━━━━━",
+        f"👑 *Премиум:* {premium_text}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━",
         reply_markup=get_back_keyboard(),
         parse_mode='Markdown'
     )
@@ -984,19 +1002,29 @@ async def balance(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "daily_bonus")
 async def daily_bonus(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    if not await require_subscription(user_id):
+        await callback.message.edit_text(
+            "📢 *Для получения бонуса подпишись на канал!*\n"
+            "➡️ @XalaTGK",
+            reply_markup=get_channel_sub_keyboard(),
+            parse_mode='Markdown'
+        )
+        await callback.answer()
+        return
     user = get_user(user_id)
     if not user:
         await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
-    
     if can_claim_bonus(user_id):
         claim_bonus(user_id)
         user = get_user(user_id)
         await callback.message.edit_text(
-            f"🎁 *Бонус получен!* 🎁\n━━━━━━━━━━━━━━━━\n"
+            f"🎁 *Бонус получен!* 🎁\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"+6 🪙\n"
-            f"💰 *Баланс:* {user['coins']} 🪙\n━━━━━━━━━━━━━━━━\n"
+            f"💰 *Баланс:* {user['coins']} 🪙\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏰ Следующий бонус через 12 часов.",
             reply_markup=get_back_keyboard(),
             parse_mode='Markdown'
@@ -1008,7 +1036,8 @@ async def daily_bonus(callback: types.CallbackQuery):
             hours = remaining.seconds // 3600
             minutes = (remaining.seconds % 3600) // 60
             await callback.message.edit_text(
-                f"⏰ *Бонус пока недоступен*\n━━━━━━━━━━━━━━━━\n"
+                f"⏰ *Бонус пока недоступен*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"Следующий бонус через {hours} ч {minutes} мин.",
                 reply_markup=get_back_keyboard(),
                 parse_mode='Markdown'
@@ -1026,10 +1055,13 @@ async def invite(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
     ])
     await callback.message.edit_text(
-        f"👥 *Твоя реферальная ссылка* 👥\n━━━━━━━━━━━━━━━━\n"
-        f"🔗 `{invite_link}`\n━━━━━━━━━━━━━━━━\n"
+        f"👥 *Твоя реферальная ссылка* 👥\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 `{invite_link}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 *Пригласи друга → +8 🪙*\n"
-        f"🎁 *Друг получит +10 🪙*\n━━━━━━━━━━━━━━━━",
+        f"🎁 *Друг получит +10 🪙*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━",
         reply_markup=keyboard,
         parse_mode='Markdown'
     )
@@ -1041,24 +1073,28 @@ async def premium_menu(callback: types.CallbackQuery):
     if is_premium(user_id):
         until = datetime.fromisoformat(get_user(user_id)['premium_until']).strftime('%d.%m.%Y')
         await callback.message.edit_text(
-            f"👑 *Премиум активен* 👑\n━━━━━━━━━━━━━━━━\n"
+            f"👑 *Премиум активен* 👑\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📅 До: {until}\n"
-            f"🎬 Безлимитный просмотр\n━━━━━━━━━━━━━━━━",
+            f"🎬 Безлимитный просмотр\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━",
             reply_markup=get_back_keyboard(),
             parse_mode='Markdown'
         )
     else:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 Купить премиум", callback_data="buy_contact")],
+            [InlineKeyboardButton(text="💎 Купить премиум", url="https://t.me/XalaTGK")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
         ])
         await callback.message.edit_text(
-            "👑 *Премиум подписка* 👑\n━━━━━━━━━━━━━━━━\n"
+            "👑 *Премиум подписка* 👑\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
             "💎 *Цена:* 300 ⭐\n"
             "🌟 *Преимущества:*\n"
             "• Безлимитный просмотр\n"
-            "• +50 🪙 в подарок\n━━━━━━━━━━━━━━━━\n"
-            "📩 Для покупки напиши @GendaleTray",
+            "• +50 🪙 в подарок\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📩 Для покупки напиши в @XalaTGK",
             reply_markup=keyboard,
             parse_mode='Markdown'
         )
@@ -1072,14 +1108,15 @@ async def stats(callback: types.CallbackQuery):
         await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
-    
     cursor.execute('SELECT COUNT(*) FROM users WHERE referrer_id = ?', (user_id,))
     invited = cursor.fetchone()[0]
     await callback.message.edit_text(
-        f"📊 *Статистика* 📊\n━━━━━━━━━━━━━━━━\n"
+        f"📊 *Статистика* 📊\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 *Приглашено:* {invited}\n"
         f"💰 *Заработано:* {user['total_earned']} 🪙\n"
-        f"🎬 *Просмотрено:* {user['total_videos']}\n━━━━━━━━━━━━━━━━",
+        f"🎬 *Просмотрено:* {user['total_videos']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━",
         reply_markup=get_back_keyboard(),
         parse_mode='Markdown'
     )
@@ -1088,7 +1125,8 @@ async def stats(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "promo_code")
 async def promo_code_prompt(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        "🎫 *Введите промокод* 🎫\n━━━━━━━━━━━━━━━━\n"
+        "🎫 *Введите промокод* 🎫\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Отправь код текстовым сообщением.\n"
         "Промокод не чувствителен к регистру.",
         reply_markup=get_back_keyboard(),
@@ -1100,16 +1138,25 @@ async def promo_code_prompt(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "earn")
 async def earn_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    if not await require_subscription(user_id):
+        await callback.message.edit_text(
+            "📢 *Для выполнения задания подпишись на канал!*\n"
+            "➡️ @XalaTGK",
+            reply_markup=get_channel_sub_keyboard(),
+            parse_mode='Markdown'
+        )
+        await callback.answer()
+        return
     user = get_user(user_id)
     if not user:
         await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
-    
     submitted, approved, completed = get_task_status(user_id)
     if completed == 1:
         await callback.message.edit_text(
-            "📋 *Задание выполнено!* 📋\n━━━━━━━━━━━━━━━━\n"
+            "📋 *Задание выполнено!* 📋\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
             "✅ Ты уже получил 30 коинов.\n"
             "🔄 Начни новое задание кнопкой ниже.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1122,32 +1169,35 @@ async def earn_callback(callback: types.CallbackQuery):
         return
     if submitted > 0:
         await callback.message.edit_text(
-            f"📋 *Твой прогресс* 📋\n━━━━━━━━━━━━━━━━\n"
+            f"📋 *Твой прогресс* 📋\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📤 Отправлено: {submitted}/10\n"
-            f"✅ Одобрено: {approved}/10\n━━━━━━━━━━━━━━━━\n"
+            f"✅ Одобрено: {approved}/10\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             "📸 Продолжай отправлять скриншоты.",
             reply_markup=get_back_keyboard(),
             parse_mode='Markdown'
         )
         await callback.answer()
         return
-    
     success, msg = start_task(user_id)
     if not success:
         await callback.message.edit_text(msg, reply_markup=get_back_keyboard(), parse_mode='Markdown')
         await callback.answer()
         return
-    
     instruction = (
-        "💰 *Как заработать 30 коинов?* 💰\n━━━━━━━━━━━━━━━━\n"
+        "💰 *Как заработать 30 коинов?* 💰\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
         "1️⃣ Зайди в TikTok\n"
         "2️⃣ В поиске напиши: *Детское Питание*\n"
         "3️⃣ Под видео оставь комментарий:\n"
-        "   `@GendaleTray РИЛ ДАЛИ 😂`\n"
+        "   `@XalaTGK РИЛ ДАЛИ 😂`\n"
         "4️⃣ Поставь лайк\n"
-        "5️⃣ Сделай скриншот\n━━━━━━━━━━━━━━━━\n"
+        "5️⃣ Сделай скриншот\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
         "📌 *Нужно 10 скриншотов!*\n"
-        "📸 Отправляй скриншоты @GendaleTray\n━━━━━━━━━━━━━━━━"
+        "📸 Отправляй скриншоты в бот\n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
     )
     await callback.message.edit_text(instruction, reply_markup=get_back_keyboard(), parse_mode='Markdown')
     await callback.answer()
@@ -1158,50 +1208,69 @@ async def leaderboard(callback: types.CallbackQuery):
     users = cursor.fetchall()
     if not users:
         await callback.message.edit_text(
-            "🏆 *Топ пользователей* 🏆\n━━━━━━━━━━━━━━━━\n"
+            "🏆 *Топ пользователей* 🏆\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
             "📊 Пока нет пользователей.",
             reply_markup=get_back_keyboard(),
             parse_mode='Markdown'
         )
         await callback.answer()
         return
-    
-    text = "🏆 *Топ пользователей* 🏆\n━━━━━━━━━━━━━━━━\n"
+    text = "🏆 *Топ пользователей* 🏆\n━━━━━━━━━━━━━━━━━━━━━━\n"
     medals = ['🥇', '🥈', '🥉']
     for i, user in enumerate(users):
         medal = medals[i] if i < 3 else f"{i+1}."
         text += f"{medal} `{user[0]}` — {user[1]} 🪙 ({user[2]} видео)\n"
-    text += "━━━━━━━━━━━━━━━━"
-    
+    text += "━━━━━━━━━━━━━━━━━━━━━━"
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode='Markdown')
     await callback.answer()
 
-# --- ОДОБРЕНИЕ/ОТКЛОНЕНИЕ СКРИНШОТОВ (МЕНЕДЖЕР) ---
+@dp.callback_query(lambda c: c.data == "start_new_task")
+async def start_new_task(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    success, msg = start_task(user_id)
+    if not success:
+        await callback.message.edit_text(msg, reply_markup=get_back_keyboard(), parse_mode='Markdown')
+        await callback.answer()
+        return
+    instruction = (
+        "💰 *Как заработать 30 коинов?* 💰\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "1️⃣ Зайди в TikTok\n"
+        "2️⃣ В поиске напиши: *Детское Питание*\n"
+        "3️⃣ Под видео оставь комментарий:\n"
+        "   `@XalaTGK РИЛ ДАЛИ 😂`\n"
+        "4️⃣ Поставь лайк\n"
+        "5️⃣ Сделай скриншот\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📌 *Нужно 10 скриншотов!*\n"
+        "📸 зайди в тгк @XalaTGK там будет юз менеджера кидай ему ! \n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await callback.message.edit_text(instruction, reply_markup=get_back_keyboard(), parse_mode='Markdown')
+    await callback.answer()
+
+# --- ОДОБРЕНИЕ/ОТКЛОНЕНИЕ СКРИНШОТОВ (АДМИНЫ) ---
 @dp.callback_query(lambda c: c.data.startswith("approve_"))
 async def approve_screenshot(callback: types.CallbackQuery):
-    if not is_manager(callback.from_user.id):
+    if not is_admin(callback.from_user.id):
         await callback.answer("❌ У вас нет прав.", show_alert=True)
         return
-    
     target_user = int(callback.data.split('_')[1])
-    
     cursor.execute('SELECT id FROM pending_screenshots WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (target_user,))
     row = cursor.fetchone()
     if not row:
         await callback.message.edit_text("❌ Нет скриншотов на проверку.")
         await callback.answer()
         return
-    
     screenshot_id = row[0]
     result = approve_screenshot(screenshot_id)
     if not result:
         await callback.message.edit_text("❌ Ошибка при одобрении.")
         await callback.answer()
         return
-    
     user_id, completed, submitted, approved = result
     await callback.message.edit_text(f"✅ Скриншот одобрен! Прогресс: {approved}/10")
-    
     if completed:
         await bot.send_message(target_user, "🎉 *Поздравляем!*\n━━━━━━━━━━━━━━━━\n✅ Ты выполнил задание!\n💰 +30 коинов начислено!\n━━━━━━━━━━━━━━━━", reply_markup=get_main_keyboard(), parse_mode='Markdown')
     else:
@@ -1210,26 +1279,22 @@ async def approve_screenshot(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("reject_"))
 async def reject_screenshot(callback: types.CallbackQuery):
-    if not is_manager(callback.from_user.id):
+    if not is_admin(callback.from_user.id):
         await callback.answer("❌ У вас нет прав.", show_alert=True)
         return
-    
     target_user = int(callback.data.split('_')[1])
-    
     cursor.execute('SELECT id FROM pending_screenshots WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (target_user,))
     row = cursor.fetchone()
     if not row:
         await callback.message.edit_text("❌ Нет скриншотов на проверку.")
         await callback.answer()
         return
-    
     screenshot_id = row[0]
     result = reject_screenshot(screenshot_id)
     if not result:
         await callback.message.edit_text("❌ Ошибка при отклонении.")
         await callback.answer()
         return
-    
     user_id, submitted, approved = result
     await callback.message.edit_text(f"❌ Скриншот отклонён. Прогресс: {approved}/10")
     await bot.send_message(target_user, f"❌ *Скриншот отклонён.*\n📊 Прогресс: {approved}/10\n📸 Отправь новый скриншот.", reply_markup=get_main_keyboard())
