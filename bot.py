@@ -36,7 +36,8 @@ cursor.execute('''
         premium_until TEXT,
         video_history TEXT DEFAULT '',
         start_date TEXT,
-        channel_subscribed INTEGER DEFAULT 0
+        channel_subscribed INTEGER DEFAULT 0,
+        registered INTEGER DEFAULT 0
     )
 ''')
 cursor.execute('''
@@ -101,6 +102,9 @@ if 'start_date' not in columns:
     conn.commit()
 if 'channel_subscribed' not in columns:
     cursor.execute('ALTER TABLE users ADD COLUMN channel_subscribed INTEGER DEFAULT 0')
+    conn.commit()
+if 'registered' not in columns:
+    cursor.execute('ALTER TABLE users ADD COLUMN registered INTEGER DEFAULT 0')
     conn.commit()
 
 # --- ВИДЕО ---
@@ -236,6 +240,11 @@ def get_random_video_except_last(user_id):
 # ФУНКЦИИ
 # =================================================================
 
+def is_registered(user_id):
+    cursor.execute('SELECT registered FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    return row and row[0] == 1
+
 def is_premium(user_id):
     cursor.execute('SELECT premium_until FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
@@ -274,7 +283,7 @@ def get_referral_code(user_id):
             return code
 
 def get_user(user_id):
-    cursor.execute('SELECT coins, total_earned, total_videos, referrer_id, last_bonus, premium_until FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT coins, total_earned, total_videos, referrer_id, last_bonus, premium_until, registered FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     if row:
         return {
@@ -283,7 +292,8 @@ def get_user(user_id):
             'total_videos': row[2],
             'referrer_id': row[3],
             'last_bonus': row[4],
-            'premium_until': row[5]
+            'premium_until': row[5],
+            'registered': row[6]
         }
     return None
 
@@ -325,9 +335,9 @@ def register_user(user_id, referrer_code=None):
         if ref:
             referrer_id = ref[0]
     cursor.execute('''
-        INSERT INTO users (user_id, coins, referrer_id, pending_captcha, pending_referrer, start_date, channel_subscribed)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, 0, referrer_id, captcha, referrer_id, datetime.now().isoformat(), 0))
+        INSERT INTO users (user_id, coins, referrer_id, pending_captcha, pending_referrer, start_date, channel_subscribed, registered)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, 0, referrer_id, captcha, referrer_id, datetime.now().isoformat(), 0, 0))
     conn.commit()
     return {'captcha': captcha, 'answer': answer, 'referrer_id': referrer_id}
 
@@ -340,7 +350,7 @@ def process_captcha(user_id, user_answer):
     referrer_id = row[1]
     expected = eval(captcha_str)
     if int(user_answer) == expected:
-        cursor.execute('UPDATE users SET coins = 10, pending_captcha = NULL WHERE user_id = ?', (user_id,))
+        cursor.execute('UPDATE users SET coins = 10, pending_captcha = NULL, registered = 1 WHERE user_id = ?', (user_id,))
         if referrer_id and referrer_id != 0:
             cursor.execute('UPDATE users SET coins = coins + 8, total_earned = total_earned + 8 WHERE user_id = ?', (referrer_id,))
             cursor.execute('UPDATE referrals SET uses = uses + 1 WHERE user_id = ?', (referrer_id,))
@@ -491,17 +501,17 @@ def get_user_stats():
     }
 
 # =================================================================
-# КОМАНДЫ БОТА
+# ОБРАБОТЧИК КОМАНДЫ /start
 # =================================================================
 
 @dp.message(Command('start'))
 async def start(message: types.Message):
-    args = message.text.split()
-    referrer_code = args[1] if len(args) > 1 else None
     user_id = message.from_user.id
     log_user_start(user_id)
     user = get_user(user_id)
-    if user:
+    
+    if user and user['registered'] == 1:
+        # Пользователь зарегистрирован
         if not await require_subscription(user_id):
             await message.answer(
                 "🌟 *Добро пожаловать в Xala Video!* 🌟\n\n"
@@ -532,6 +542,10 @@ async def start(message: types.Message):
             parse_mode='Markdown'
         )
         return
+    
+    # Регистрация нового пользователя
+    args = message.text.split()
+    referrer_code = args[1] if len(args) > 1 else None
     result = register_user(user_id, referrer_code)
     if result and 'captcha' in result:
         await message.answer(
@@ -543,6 +557,10 @@ async def start(message: types.Message):
             parse_mode='Markdown'
         )
         dp['captcha_waiting'][user_id] = result['answer']
+
+# =================================================================
+# АДМИН-КОМАНДЫ
+# =================================================================
 
 @dp.message(Command('add_promo'))
 async def add_promo_command(message: types.Message):
@@ -674,7 +692,7 @@ async def remove_premium_command(message: types.Message):
 async def stats_users_command(message: types.Message):
     user_id = message.from_user.id
     user = get_user(user_id)
-    if not user:
+    if not user or user['registered'] == 0:
         await message.answer("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         return
     cursor.execute('SELECT COUNT(*) FROM users WHERE referrer_id = ?', (user_id,))
@@ -754,10 +772,10 @@ async def give_all_coins(message: types.Message):
     if amount <= 0:
         await message.answer("❌ Количество должно быть положительным.")
         return
-    cursor.execute('SELECT user_id FROM users')
+    cursor.execute('SELECT user_id FROM users WHERE registered = 1')
     all_users = cursor.fetchall()
     if not all_users:
-        await message.answer("❌ В базе нет пользователей.")
+        await message.answer("❌ В базе нет зарегистрированных пользователей.")
         return
     count = 0
     for (uid,) in all_users:
@@ -789,7 +807,7 @@ async def give_active_coins(message: types.Message):
     if amount <= 0:
         await message.answer("❌ Количество должно быть положительным.")
         return
-    cursor.execute('SELECT user_id FROM users WHERE start_date IS NOT NULL')
+    cursor.execute('SELECT user_id FROM users WHERE start_date IS NOT NULL AND registered = 1')
     active_users = cursor.fetchall()
     if not active_users:
         await message.answer("❌ Активных пользователей нет.")
@@ -807,21 +825,20 @@ async def give_active_coins(message: types.Message):
     await message.answer(f"✅ Выдано {amount} 🪙 {count} активным пользователям.")
 
 # =================================================================
-# ОБЩИЙ ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ
+# ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (НЕ КОМАНД)
 # =================================================================
 
 @dp.message()
 async def handle_all_messages(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
+    
+    # Проверяем, что это не команда (не начинается с /)
     if text.startswith('/'):
-        await message.answer("❌ Неизвестная команда. Используй /start")
+        await message.answer("❌ Неизвестная команда. Используй /start", reply_markup=get_main_keyboard())
         return
-    if dp['waiting_for_promo'].get(user_id):
-        del dp['waiting_for_promo'][user_id]
-        success, msg = activate_promo_code(user_id, text)
-        await message.answer(msg, reply_markup=get_main_keyboard(), parse_mode='Markdown')
-        return
+    
+    # ПРОВЕРКА КАПЧИ
     if dp['captcha_waiting'].get(user_id):
         try:
             answer = int(text)
@@ -845,8 +862,23 @@ async def handle_all_messages(message: types.Message):
             else:
                 await message.answer("❌ Неправильно. Попробуй ещё раз.")
         except ValueError:
-            await message.answer("❌ Отправь число.")
+            await message.answer("❌ Отправь число, а не буквы!", parse_mode='Markdown')
         return
+    
+    # ПРОВЕРКА ПОДПИСКИ (если пользователь не зарегистрирован)
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await message.answer("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
+        return
+    
+    # ПРОМОКОД
+    if dp['waiting_for_promo'].get(user_id):
+        del dp['waiting_for_promo'][user_id]
+        success, msg = activate_promo_code(user_id, text)
+        await message.answer(msg, reply_markup=get_main_keyboard(), parse_mode='Markdown')
+        return
+    
+    # СКРИНШОТЫ
     if message.photo or message.document:
         submitted, approved, completed = get_task_status(user_id)
         if completed == 1:
@@ -869,7 +901,9 @@ async def handle_all_messages(message: types.Message):
                 pass
         await message.answer(f"✅ Скриншот {new_submitted}/10 отправлен на проверку.", reply_markup=get_main_keyboard())
         return
-    await message.answer("❌ Неизвестная команда. Используй /start", reply_markup=get_main_keyboard())
+    
+    # Обычное сообщение
+    await message.answer("❌ Неизвестная команда. Используй /start или кнопки меню", reply_markup=get_main_keyboard())
 
 # =================================================================
 # ВСЕ CALLBACK'И
@@ -919,6 +953,15 @@ async def buy_contact(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text(
+            "❌ Сначала пройди регистрацию. Напиши /start",
+            reply_markup=get_back_keyboard(),
+            parse_mode='Markdown'
+        )
+        await callback.answer()
+        return
     if not await require_subscription(user_id):
         await callback.message.edit_text(
             "📢 *Для доступа нужно подписаться на канал:*\n"
@@ -947,19 +990,19 @@ async def back_to_menu(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "buy_video")
 async def buy_video(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
     if not await require_subscription(user_id):
         await callback.message.edit_text(
-            "📢 *Для просмотра видео нужно подписаться на канал!*\n"
+            "📢 *Для просмотра видео подпишись на канал!*\n"
             "➡️ @XalaTGK\n\n"
             "👇 *Нажми кнопку после подписки:*",
             reply_markup=get_channel_sub_keyboard(),
             parse_mode='Markdown'
         )
-        await callback.answer()
-        return
-    user = get_user(user_id)
-    if not user:
-        await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
     if not is_premium(user_id) and user['coins'] < 2:
@@ -1023,8 +1066,8 @@ async def buy_video(callback: types.CallbackQuery):
 async def balance(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user = get_user(user_id)
-    if not user:
-        await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
     premium_text = "✅ активен" if is_premium(user_id) else "❌ нет"
@@ -1044,6 +1087,11 @@ async def balance(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "daily_bonus")
 async def daily_bonus(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
     if not await require_subscription(user_id):
         await callback.message.edit_text(
             "📢 *Для получения бонуса подпишись на канал!*\n"
@@ -1051,11 +1099,6 @@ async def daily_bonus(callback: types.CallbackQuery):
             reply_markup=get_channel_sub_keyboard(),
             parse_mode='Markdown'
         )
-        await callback.answer()
-        return
-    user = get_user(user_id)
-    if not user:
-        await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
     if can_claim_bonus(user_id):
@@ -1089,6 +1132,11 @@ async def daily_bonus(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "invite")
 async def invite(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
     code = get_referral_code(user_id)
     bot_username = (await bot.get_me()).username
     invite_link = f"https://t.me/{bot_username}?start={code}"
@@ -1112,8 +1160,13 @@ async def invite(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "premium")
 async def premium_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
     if is_premium(user_id):
-        until = datetime.fromisoformat(get_user(user_id)['premium_until']).strftime('%d.%m.%Y')
+        until = datetime.fromisoformat(user['premium_until']).strftime('%d.%m.%Y')
         await callback.message.edit_text(
             f"👑 *Премиум активен* 👑\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1146,8 +1199,8 @@ async def premium_menu(callback: types.CallbackQuery):
 async def stats(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user = get_user(user_id)
-    if not user:
-        await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
     cursor.execute('SELECT COUNT(*) FROM users WHERE referrer_id = ?', (user_id,))
@@ -1166,6 +1219,12 @@ async def stats(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "promo_code")
 async def promo_code_prompt(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
     await callback.message.edit_text(
         "🎫 *Введите промокод* 🎫\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1180,6 +1239,11 @@ async def promo_code_prompt(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "earn")
 async def earn_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user or user['registered'] == 0:
+        await callback.message.edit_text("❌ Сначала пройди регистрацию. Напиши /start", reply_markup=get_back_keyboard())
+        await callback.answer()
+        return
     if not await require_subscription(user_id):
         await callback.message.edit_text(
             "📢 *Для выполнения задания подпишись на канал!*\n"
@@ -1187,11 +1251,6 @@ async def earn_callback(callback: types.CallbackQuery):
             reply_markup=get_channel_sub_keyboard(),
             parse_mode='Markdown'
         )
-        await callback.answer()
-        return
-    user = get_user(user_id)
-    if not user:
-        await callback.message.edit_text("❌ Ошибка. Напиши /start", reply_markup=get_back_keyboard())
         await callback.answer()
         return
     submitted, approved, completed = get_task_status(user_id)
@@ -1246,7 +1305,7 @@ async def earn_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "leaderboard")
 async def leaderboard(callback: types.CallbackQuery):
-    cursor.execute('SELECT user_id, coins, total_videos FROM users ORDER BY coins DESC LIMIT 10')
+    cursor.execute('SELECT user_id, coins, total_videos FROM users WHERE registered = 1 ORDER BY coins DESC LIMIT 10')
     users = cursor.fetchall()
     if not users:
         await callback.message.edit_text(
@@ -1286,7 +1345,7 @@ async def start_new_task(callback: types.CallbackQuery):
         "5️⃣ Сделай скриншот\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "📌 *Нужно 10 скриншотов!*\n"
-        "📸 зайди  в тгк @XalaTgK там юз менеджера ему скинь\n"
+        "📸 Отправляй скриншоты в бот\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
     await callback.message.edit_text(instruction, reply_markup=get_back_keyboard(), parse_mode='Markdown')
