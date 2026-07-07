@@ -192,6 +192,47 @@ async def require_subscription(user_id):
     return False
 
 # =================================================================
+# ФУНКЦИИ ДЛЯ РАБОТЫ С ВИДЕО
+# =================================================================
+
+def update_video_history(user_id, video_url):
+    cursor.execute('SELECT video_history FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    history = row[0] if row and row[0] else ""
+    history_list = history.split(',') if history else []
+    history_list.append(video_url)
+    if len(history_list) > 20:
+        history_list = history_list[-20:]
+    new_history = ','.join(history_list)
+    cursor.execute('UPDATE users SET video_history = ? WHERE user_id = ?', (new_history, user_id))
+    conn.commit()
+
+def get_random_video_except_last(user_id):
+    cursor.execute('SELECT url, price FROM videos WHERE is_active = 1')
+    all_videos = cursor.fetchall()
+    if not all_videos:
+        return None
+    
+    cursor.execute('SELECT video_history FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    history = row[0] if row and row[0] else ""
+    history_list = history.split(',') if history else []
+    
+    if len(history_list) < 5:
+        selected = random.choice(all_videos)
+        update_video_history(user_id, selected[0])
+        return selected
+    
+    exclude_urls = history_list[-5:]
+    candidates = [v for v in all_videos if v[0] not in exclude_urls]
+    if not candidates:
+        candidates = all_videos
+    
+    selected = random.choice(candidates)
+    update_video_history(user_id, selected[0])
+    return selected
+
+# =================================================================
 # ФУНКЦИИ
 # =================================================================
 
@@ -965,7 +1006,7 @@ async def buy_video(callback: types.CallbackQuery):
             parse_mode='Markdown',
             reply_markup=get_video_keyboard()
         )
-    except Exception:
+    except Exception as e:
         if not is_premium(user_id):
             update_coins(user_id, price)
             cursor.execute('UPDATE users SET total_videos = total_videos - 1 WHERE user_id = ?', (user_id,))
@@ -975,6 +1016,7 @@ async def buy_video(callback: types.CallbackQuery):
             reply_markup=get_main_keyboard(),
             parse_mode='Markdown'
         )
+        print(f"Ошибка отправки видео: {e}")
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "balance")
@@ -1244,7 +1286,7 @@ async def start_new_task(callback: types.CallbackQuery):
         "5️⃣ Сделай скриншот\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "📌 *Нужно 10 скриншотов!*\n"
-        "📸 зайди в тгк @XalaTGK там будет юз менеджера кидай ему ! \n"
+        "📸 зайди  в тгк @XalaTgK там юз менеджера ему скинь\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
     await callback.message.edit_text(instruction, reply_markup=get_back_keyboard(), parse_mode='Markdown')
