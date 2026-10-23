@@ -1,0 +1,31 @@
+# ====== Discord Bot Config ======
+discord:
+  # Токен бота
+  token: "MTU2MzI3NTQyMTg3MTUwOTU3NQ.G_zHvu.vo6JXGexcUhOojRb1KWxDaNYaVzxT_dSpQx32c"
+
+  # ID канала стафф-чата
+  channel_id: 1562914851997614269
+
+  # URL вебхука (создать: Настройки канала -> Интеграции -> Вебхуки)
+  # Если указан - сообщения идут от имени игроков со скином-аватаркой
+  webhook_url: ""
+
+  # Статус бота
+  activity: "Смотрит за ProfiGrief"
+
+# ====== Redis Config ======
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  password: ""
+  db: 0
+
+# ====== Общие настройки ======
+settings:
+  server_name: "ProfiGrief"
+
+  # Отправлять ли уведомления о запуске/остановке сервера
+  server_status_notify: true
+
+  # Отправлять ли уведомления о входе/выходе стаффа
+  staff_join_leave_notify: true
