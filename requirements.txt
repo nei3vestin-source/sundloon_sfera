@@ -1,2 +1,4 @@
-aiogram
-sqlite3
+discord.py==2.4.0
+redis==5.0.8
+PyYAML==6.0.2
+aiohttp==3.10.5
